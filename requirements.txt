@@ -1,0 +1,4 @@
+dataclasses
+google-generativeai
+pyyaml
+numpy
