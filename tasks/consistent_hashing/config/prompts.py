@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# More background about consistent hashing can be found at: https://arxiv.org/pdf/1908.08762
+
 RJCH = '''
     def _add_one_object_algo(self, object_id):
         """

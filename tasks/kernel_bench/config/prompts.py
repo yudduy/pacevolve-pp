@@ -102,7 +102,7 @@ TASK_INTRO = """
 You are an expert researcher who specializes in high performance machine learning kernels. We are studying optimizing the kernel of a given machine learning operator (could be an operation, a neural network layer, or a model).
 """
 
-
+# The following prompt is modified from GEPA: https://arxiv.org/pdf/2507.19457
 BACKGROUND = """
 To optimize a given PyTorch model by replacing operators with custom CUDA kernels, follow these detailed instructions. Your goal is to achieve performance improvements while ensuring correctness. Name your optimized output architecture ‘ModelNew‘. Output the new model code in codeblocks. Please generate real code, NOT pseudocode, and ensure the code compiles and is fully functional. Do not include testing code.
 
