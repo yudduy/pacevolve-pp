@@ -16,6 +16,7 @@
 
 llm:
   name: "gemini-2.5-pro"
+  client_type: "gemini"
   context_size: 120000
   safety_margin: 600
   max_try_count: 5

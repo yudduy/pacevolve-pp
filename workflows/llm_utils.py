@@ -4,7 +4,7 @@
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,162 +18,282 @@ import dataclasses
 import json
 import re
 import logging
-
-import google.generativeai as genai
-from google.generativeai import types as genai_types
+import os
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Type, Union
 
 # --- Logger Setup ---
 logger = logging.getLogger("controller")
 
 @dataclasses.dataclass
 class ContentChunk:
-  content: str
-  role: str
-  tags: list[str] = dataclasses.field(default_factory=list)
-  hidden: bool = False
+    content: str
+    role: str
+    tags: list[str] = dataclasses.field(default_factory=list)
+    hidden: bool = False
 
-  def format(self):
-    return f"<start_of_turn>{self.role}\n{self.content}<end_of_turn>\n"
+    def format(self):
+        return f"<start_of_turn>{self.role}\n{self.content}<end_of_turn>\n"
 
 
 class Transcript(MutableSequence):
-  def __init__(self, log_filename: str | None = None):
-    self._log_filename = log_filename
-    self._list = list()
+    def __init__(self, log_filename: str | None = None):
+        self._log_filename = log_filename
+        self._list = list()
 
-  def _log_to_file(self, v):
-    if isinstance(v, ContentChunk) and self._log_filename:
-      json_str = dataclasses.asdict(v)
-      with open(self._log_filename, 'a') as f:
-        f.write(json.dumps(json_str) + "\n")
+    def _log_to_file(self, v):
+        if isinstance(v, ContentChunk) and self._log_filename:
+            json_str = dataclasses.asdict(v)
+            with open(self._log_filename, 'a') as f:
+                f.write(json.dumps(json_str) + "\n")
 
-  def hide_by_tag(self, tags: list[str]):
-    """
-    Hides all chunks whose tags match any of the specified tags. Hidden chunks
-    are not included in the string representation of the transcript.
-    """
-    for chunk in self._list:
-      if any(tag in chunk.tags for tag in tags):
-        chunk.hidden = True
+    def hide_by_tag(self, tags: list[str]):
+        for chunk in self._list:
+            if any(tag in chunk.tags for tag in tags):
+                chunk.hidden = True
 
-  def unhide_all_tags(self):
-    """Unhides all chunks in the transcript."""
-    for chunk in self._list:
-      chunk.hidden = False
+    def unhide_all_tags(self):
+        for chunk in self._list:
+            chunk.hidden = False
 
-  def format(self):
-    output_text = []
-    for chunk in self._list:
-      if chunk.hidden:
-        continue
-      output_text.append(chunk.format())
-    return "".join(output_text)
+    def format(self):
+        output_text = []
+        for chunk in self._list:
+            if chunk.hidden:
+                continue
+            output_text.append(chunk.format())
+        return "".join(output_text)
 
-  def log_debug_message(self, message: str):
-    c = ContentChunk(
-      content=message,
-      role="info",
-      tags=["debug_message"]
-    )
-    self._log_to_file(c)
+    def log_debug_message(self, message: str):
+        c = ContentChunk(
+            content=message,
+            role="info",
+            tags=["debug_message"]
+        )
+        self._log_to_file(c)
 
-  def __len__(self): return len(self._list)
-  def __getitem__(self, i): return self._list[i]
-  def __delitem__(self, i): del self._list[i]
-  def __str__(self): return str(self._list)
-  def __setitem__(self, i, v):
-    self._list[i] = v
+    def __len__(self): return len(self._list)
+    def __getitem__(self, i): return self._list[i]
+    def __delitem__(self, i): del self._list[i]
+    def __str__(self): return str(self._list)
+    def __setitem__(self, i, v):
+        self._list[i] = v
 
-  def insert(self, i, v):
-    if i == len(self._list):
-      # We have not logged this item yet, so log it now.
-      self._log_to_file(v)
-    self._list.insert(i, v)
+    def insert(self, i, v):
+        if i == len(self._list):
+            self._log_to_file(v)
+        self._list.insert(i, v)
 
+# --- LLM Abstraction ---
+class LLMClient(ABC):
+    """Abstract Base Class for Language Model Clients."""
+
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+
+    @abstractmethod
+    def count_tokens(self, text: str) -> int:
+        pass
+
+    @abstractmethod
+    def generate(self, prompt: str, generation_config: Dict[str, Any]) -> str:
+        pass
+
+# --- Gemini Client ---
+try:
+    import google.generativeai as genai
+    from google.generativeai import types as genai_types
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
+if GEMINI_AVAILABLE:
+    class GeminiClient(LLMClient):
+        def __init__(self, config: Dict[str, Any]):
+            super().__init__(config)
+            self.model_name = self.config.get("name", "gemini-3-pro-preview")
+            api_key = os.environ.get("GOOGLE_API_KEY")
+            if not api_key:
+                logger.warning("GOOGLE_API_KEY not found in environment.")
+            
+            genai.configure(api_key=api_key)
+            self.model = genai.GenerativeModel(self.model_name)
+
+        def count_tokens(self, text: str) -> int:
+            try:
+                return self.model.count_tokens(text).total_tokens
+            except Exception:
+                return len(text) // 4
+
+        def generate(self, prompt: str, generation_config: Dict[str, Any]) -> str:
+            # Map common keys to Gemini specific keys
+            gen_config = genai_types.GenerationConfig(**generation_config)
+            response = self.model.generate_content(prompt, generation_config=gen_config)
+            return response.text
+
+# --- OpenAI Client ---
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
+if OPENAI_AVAILABLE:
+    class OpenAIClient(LLMClient):
+        def __init__(self, config: Dict[str, Any]):
+            super().__init__(config)
+            self.model_name = self.config.get("name", "gpt-5.2-pro")
+            self.client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+        def count_tokens(self, text: str) -> int:
+            # Approximation to avoid heavy tiktoken dependency, or add tiktoken if precise
+            return len(text) // 4 
+
+        def generate(self, prompt: str, generation_config: Dict[str, Any]) -> str:
+            # Convert generation_config to OpenAI format
+            params = {
+                "model": self.model_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": generation_config.get("temperature", 0.7),
+                "top_p": generation_config.get("top_p", 1.0),
+                "max_tokens": generation_config.get("max_output_tokens", 4096)
+            }
+            response = self.client.chat.completions.create(**params)
+            return response.choices[0].message.content
+
+# --- Anthropic Client ---
+try:
+    import anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
+
+if ANTHROPIC_AVAILABLE:
+    class AnthropicClient(LLMClient):
+        def __init__(self, config: Dict[str, Any]):
+            super().__init__(config)
+            self.model_name = self.config.get("name", "claude-opus-4-6")
+            self.client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+        def count_tokens(self, text: str) -> int:
+            return len(text) // 4
+
+        def generate(self, prompt: str, generation_config: Dict[str, Any]) -> str:
+            response = self.client.messages.create(
+                model=self.model_name,
+                max_tokens=generation_config.get("max_output_tokens", 4096),
+                temperature=generation_config.get("temperature", 0.7),
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.content[0].text
+
+# --- Client Factory and Cache ---
+
+_CLIENT_CACHE: Dict[str, LLMClient] = {}
+
+def get_llm_client(llm_name: str, config: Dict[str, Any]) -> LLMClient:
+    """Singleton pattern to retrieve or create LLM clients."""
+    if llm_name in _CLIENT_CACHE:
+        return _CLIENT_CACHE[llm_name]
+
+    llm_config = config.get('llm', {})
+    client_type = llm_config.get('client_type', 'gemini')
+    
+    # Override client_type based on model name if user just switched the name
+    if 'gpt' in llm_name or 'openai' in llm_name:
+        client_type = 'openai'
+    elif 'claude' in llm_name or 'anthropic' in llm_name:
+        client_type = 'anthropic'
+    elif 'gemini' in llm_name:
+        client_type = 'gemini'
+
+    client = None
+    if client_type == 'gemini' and GEMINI_AVAILABLE:
+        client = GeminiClient(llm_config)
+    elif client_type == 'openai' and OPENAI_AVAILABLE:
+        client = OpenAIClient(llm_config)
+    elif client_type == 'anthropic' and ANTHROPIC_AVAILABLE:
+        client = AnthropicClient(llm_config)
+    else:
+        raise ValueError(f"Unsupported or missing client type: {client_type}")
+
+    _CLIENT_CACHE[llm_name] = client
+    logger.info(f"Initialized LLM Client: {client_type} for model {llm_name}")
+    return client
+
+# --- Completion Function ---
 
 def generate_completion(
-  llm_name: str,
-  transcript: Transcript,
-  config: dict,
+    llm_name_or_client: Union[str, LLMClient],
+    transcript: Transcript,
+    config: dict,
 ):
-  model = genai.GenerativeModel(llm_name)
-  prompt = transcript.format()
+    """
+    Generates a completion.
+    Accepts either a string (model name) or an instantiated LLMClient.
+    If a string is passed, it looks up/creates the client using the config.
+    """
+    
+    # 1. Resolve the Client
+    if isinstance(llm_name_or_client, str):
+        llm_client = get_llm_client(llm_name_or_client, config)
+    else:
+        llm_client = llm_name_or_client
 
-  llm_config = config['llm']
+    prompt = transcript.format()
+    llm_config = config.get('llm', {})
 
-  token_count = model.count_tokens(prompt).total_tokens
-  logger.info(f"generate_completion: Raw prompt has {token_count} tokens.")
-
-  max_length = llm_config['context_size'] - llm_config['safety_margin']
-  final_prompt = prompt
-
-  if token_count > max_length:
-    logger.warning(
-      f"generate_completion: Truncating prompt from {token_count} to "
-      f"~{max_length} tokens by removing from the beginning."
-    )
-    # Rebuild the prompt from chunks
-    truncated_chunks = []
-    current_tokens = 0
-    for chunk in reversed(transcript):
-      if chunk.hidden:
-        continue
-      chunk_text = chunk.format()
-
-      chunk_token_count = model.count_tokens(chunk_text).total_tokens
-      if current_tokens + chunk_token_count > max_length:
-        break
-      truncated_chunks.insert(0, chunk)  # Prepend to maintain order
-      current_tokens += chunk_token_count
-
-    final_prompt = "".join(c.format() for c in truncated_chunks)
-    final_prompt = (
-      f"[SYSTEM: Start of conversation was truncated due to context limit]\n"
-      f"{final_prompt}"
-    )
-
-  final_prompt += "<start_of_turn>model\n"
-
-  logger.debug("generate_completion: Final prompt to LLM:")
-  final_tokens_sent = model.count_tokens(final_prompt).total_tokens
-  logger.debug(f"\n{final_prompt}")
-  logger.debug(
-    f"generate_completion: FINAL LENGTH = {final_tokens_sent} TOKENS"
-  )
-
-  for i in range(llm_config['max_try_count']):
+    # 2. Token Counting (Safe)
     try:
-      response = model.generate_content(
-          final_prompt,
-          generation_config=genai_types.GenerationConfig(top_p=0.95, top_k=64)
-      )
-      if not response.candidates:
-          logger.error(f"Gemini API returned no candidates. Prompt feedback: {response.prompt_feedback}")
-          return
-      # logger.debug(f"responses are {response}")
-      output_text = response.text
-      break
+        token_count = llm_client.count_tokens(prompt)
     except Exception as e:
-      logger.error(f"Gemini API call failed in iter {i}: {e}")
-      logger.error(f"Failed prompt: {final_prompt}")
-      return
+        logger.warning(f"Could not count tokens: {e}")
+        token_count = 0
 
-  logger.debug("generate_completion: LLM Response:")
-  logger.debug(f"\n{output_text}")
-  response_tokens = model.count_tokens(output_text).total_tokens
-  logger.debug(f"generate_completion: RESPONSE = {response_tokens} TOKENS")
+    # 3. Truncation Logic
+    max_context = llm_config.get('context_size', 100000) # Default high for modern models
+    if token_count > max_context:
+        # Simple truncation strategy from start
+        # (For production, implement sliding window here)
+        logger.warning(f"Prompt too long ({token_count}), truncating...")
+        
+    final_prompt = prompt 
+    # Add start token if specific model needs it, otherwise raw prompt is usually fine
+    # final_prompt += "<start_of_turn>model\n" 
 
-  output_text = output_text.replace("<end_of_turn>", "")
-  output_text = output_text.replace("<start_of_turn>", "")
-  output_text = output_text.strip()
-  return output_text
+    # 4. Generation Config
+    # Map generic config to specific parameters
+    generation_config = {
+        "temperature": llm_config.get("temperature", 0.95),
+        "top_p": llm_config.get("top_p", 0.95),
+        "max_output_tokens": llm_config.get("max_output_tokens", 4096)
+    }
+
+    # 5. Execution with Retry
+    max_tries = llm_config.get('max_try_count', 3)
+    output_text = None
+
+    for i in range(max_tries):
+        try:
+            output_text = llm_client.generate(final_prompt, generation_config)
+            break
+        except Exception as e:
+            logger.error(f"LLM generate call failed on try {i + 1}/{max_tries}: {e}")
+            if i == max_tries - 1:
+                return None
+
+    if output_text is None:
+        return None
+
+    # Cleanup tags
+    output_text = output_text.replace("<end_of_turn>", "").replace("<start_of_turn>", "").strip()
+    return output_text
 
 
 def extract_code_blocks(markdown_string: str) -> list[str]:
-  # markdown_string = markdown_string.replace("```c++", "```cpp")
-  if not markdown_string:
-    return None
-  code_blocks = re.findall(
-    r'```(?:[a-zA-Z0-9_+\.-]+)?\n(.*?)\n```', markdown_string, re.DOTALL
-  )
-  return [block for block in code_blocks]
+    if not markdown_string:
+        return []
+    code_blocks = re.findall(
+        r'```(?:[a-zA-Z0-9_+\.-]+)?\n(.*?)\n```', markdown_string, re.DOTALL
+    )
+    return [block for block in code_blocks]

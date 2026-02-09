@@ -43,14 +43,29 @@ pip install -r requirements.txt
 
 ---
 
-### 2. Setup API Key
+### 2. Setup API Keys & Dependencies
 
-You must configure your Google GenAI key. 
+You must configure the API keys and install the necessary packages for the models you intend to use. We currently support Google Gemini, OpenAI, and Anthropic.
+
+**1. Set your API Keys**
+Export the environment variables for the providers you plan to use:
 
 ```bash
-export GOOGLE_API_KEY="your_key"
+# For Google Gemini
+export GOOGLE_API_KEY="your_gemini_key"
+
+# For OpenAI (GPT-4)
+export OPENAI_API_KEY="your_openai_key"
+
+# For Anthropic (Claude)
+export ANTHROPIC_API_KEY="your_anthropic_key"
+
+# Install all supported clients
+pip install google-generativeai openai anthropic
 ```
----
+
+Each task contains a config.yaml file in the config subdirectory, you can change the backbone llm by changing the llm section in the config file.
+
 
 ### 3. Running Your First Experiment
 To run the evolutionary process, execute the script with a specific task_id. This assumes you have a task configuration file located at ../tasks/<task_id>/config/.

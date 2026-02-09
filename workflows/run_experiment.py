@@ -34,8 +34,10 @@ if project_root not in sys.path:
 import llm_utils, workflow_utils, program_database, task_utils, idea_select_utils
 import importlib
 
-# import google.generativeai as genai
-
+# NOTE: LLM interactions are handled in llm_utils.py
+# and are configured via the YAML config file.
+# Ensure llm_utils.py supports different model backends
+# based on the 'llm' section of the config.
 
 AlgorithmTrial = workflow_utils.AlgorithmTrial
 Transcript = llm_utils.Transcript
@@ -54,6 +56,8 @@ def load_configs(config_path) -> tuple[dict, CompilationConfig, list, str, objec
   config['config_path'] = os.path.abspath(config_path)
 
   task_id = config['experiment']['task_id']
+  # llm_name is used by llm_utils to determine which model/API to call.
+  # The details of the model connection should be within the config['llm'] dict.
   llm_name = config['llm']['name']
 
   src_path = os.path.expanduser(config['paths']['src_path'])
@@ -85,7 +89,7 @@ if __name__ == "__main__":
   logger.setLevel(logging.DEBUG)
   formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
   timestamp = time.strftime("%Y%m%d_%H%M%S")
-  
+
   parser = argparse.ArgumentParser(description="Run evolutionary process")
   parser.add_argument(
       "--task_id",
@@ -112,7 +116,7 @@ if __name__ == "__main__":
   )
   parser.add_argument(
     "--use_idea_repo",
-    action=argparse.BooleanOptionalAction, 
+    action=argparse.BooleanOptionalAction,
     default=True,
     help="If included, this flag will enable the idea repository."
   )
@@ -161,7 +165,7 @@ if __name__ == "__main__":
   )
   parser.add_argument(
     "--use_idea_filter",
-    action=argparse.BooleanOptionalAction, 
+    action=argparse.BooleanOptionalAction,
     default=False,
     help="If included, this flag will enable the idea repository."
   )
@@ -181,7 +185,7 @@ if __name__ == "__main__":
   )
   parser.add_argument(
     "--use_integrated_sampling",
-    action=argparse.BooleanOptionalAction, 
+    action=argparse.BooleanOptionalAction,
     default=True,
     help="Enable momentum based integrated sampling (default: True)."
   )
@@ -194,7 +198,7 @@ if __name__ == "__main__":
   )
 
   args = parser.parse_args()
-  
+
   # Load configurations
   CONFIG_PATH = os.path.abspath(f"../tasks/{args.task_id}/config/{args.dataset_id}/config_{args.run_id}.yaml")
   config, compile_config, eval_configs, llm_name = load_configs(CONFIG_PATH)
@@ -212,9 +216,6 @@ if __name__ == "__main__":
   transcript_file = os.path.join(transcript_dir, f"transcript_{timestamp}.txt")
   print("Transcript will be written to: ", transcript_file)
 
-  # genai.configure(api_key="YOUR-KEY")
-
-
   # Main experiment loop.
   max_iters = config['experiment']['max_iters']
   max_hparam_iters = config['experiment']['max_hparam_iters']
@@ -228,7 +229,7 @@ if __name__ == "__main__":
   task_id = config['experiment']['task_id']
   # Dynamically import task-specific prompts
   prompt_filename = config['experiment'].get('prompts_file', 'prompts')
-  if args.dataset_id == ".": 
+  if args.dataset_id == ".":
     prompts = importlib.import_module(f"tasks.{task_id}.config.{prompt_filename}")
   else:
     prompts = importlib.import_module(f"tasks.{task_id}.config.{args.dataset_id}.{prompt_filename}")
@@ -258,7 +259,7 @@ if __name__ == "__main__":
     idea_repo_db.best_scores_history[temp_id].append(init_score)
     idea_repo_db.scheduler.update_score(temp_id, init_score)
     initial_repo = IdeaRepo()
-    initial_repo.sota = sota_algo 
+    initial_repo.sota = sota_algo
     idea_repo_db.idea_repos[temp_id].append(initial_repo)
 
   logger.info(f"Backtrack frequency is {args.backtrack_freq}, Back track length is {args.backtrack_len}, alpha for power law is {args.power_alpha}")
@@ -312,7 +313,7 @@ if __name__ == "__main__":
         sota_algo = idea_repo_db.idea_repos[island_id][sampled_idx].sota
         new_idea_repo = deepcopy(idea_repo_db.idea_repos[island_id][sampled_idx])
     # elif args.backtrack_freq != -1 and (i+1) % args.backtrack_freq < args.backtrack_len and i >= args.backtrack_freq:
-    
+
     new_idea_repo.sota = sota_algo
 
     per_island_count[island_id] += 1
@@ -458,7 +459,7 @@ if __name__ == "__main__":
               idea_select_utils.summarize(idea, llm_name, config, Transcript(log_filename=transcript_file), Transcript(log_filename=transcript_file))
     except:
       logger.error(f"LLM failed to summarize ideas on attempt.")
-      
+
     if last_bt_iter and args.merge_freq > -1:
       logger.info(f"End of sequence, merge backtrack results and main results")
       new_idea_repo.ideas.extend(idea_repo_db.idea_repos[island_id][repo_idx_before_backtrack].ideas)
