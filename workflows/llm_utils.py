@@ -13,14 +13,13 @@
 # limitations under the License.
 
 from collections.abc import MutableSequence
-import copy
 import dataclasses
 import json
 import re
 import logging
 import os
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Type, Union
+from typing import Any, Dict, Union
 
 # --- Logger Setup ---
 logger = logging.getLogger("controller")
@@ -120,10 +119,7 @@ if GEMINI_AVAILABLE:
             self.model = genai.GenerativeModel(self.model_name)
 
         def count_tokens(self, text: str) -> int:
-            try:
-                return self.model.count_tokens(text).total_tokens
-            except Exception:
-                return len(text) // 4
+            return self.model.count_tokens(text).total_tokens
 
         def generate(self, prompt: str, generation_config: Dict[str, Any]) -> str:
             # Map common keys to Gemini specific keys
@@ -134,6 +130,7 @@ if GEMINI_AVAILABLE:
 # --- OpenAI Client ---
 try:
     from openai import OpenAI
+    import tiktoken
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
@@ -146,16 +143,18 @@ if OPENAI_AVAILABLE:
             self.client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
         def count_tokens(self, text: str) -> int:
-            # Approximation to avoid heavy tiktoken dependency, or add tiktoken if precise
-            return len(text) // 4 
+            """Returns the number of tokens in a text string."""
+            encoding = tiktoken.encoding_for_model(self.model_name)
+            num_tokens = len(encoding.encode(text))
+            return num_tokens
 
         def generate(self, prompt: str, generation_config: Dict[str, Any]) -> str:
             # Convert generation_config to OpenAI format
             params = {
                 "model": self.model_name,
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": generation_config.get("temperature", 0.7),
-                "top_p": generation_config.get("top_p", 1.0),
+                "temperature": generation_config.get("temperature", 1.0),
+                "top_p": generation_config.get("top_p", 0.95),
                 "max_tokens": generation_config.get("max_output_tokens", 4096)
             }
             response = self.client.chat.completions.create(**params)
@@ -176,13 +175,20 @@ if ANTHROPIC_AVAILABLE:
             self.client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
         def count_tokens(self, text: str) -> int:
-            return len(text) // 4
+            """
+            Calls the Anthropic API to get a precise token count for the input string.
+            """
+            response = self.client.messages.count_tokens(
+                model=self.model_name,
+                messages=[{"role": "user", "content": text}]
+            )
+            return response.input_tokens
 
         def generate(self, prompt: str, generation_config: Dict[str, Any]) -> str:
             response = self.client.messages.create(
                 model=self.model_name,
                 max_tokens=generation_config.get("max_output_tokens", 4096),
-                temperature=generation_config.get("temperature", 0.7),
+                temperature=generation_config.get("temperature", 1.0),
                 messages=[{"role": "user", "content": prompt}]
             )
             return response.content[0].text
@@ -253,18 +259,12 @@ def generate_completion(
     # 3. Truncation Logic
     max_context = llm_config.get('context_size', 100000) # Default high for modern models
     if token_count > max_context:
-        # Simple truncation strategy from start
-        # (For production, implement sliding window here)
         logger.warning(f"Prompt too long ({token_count}), truncating...")
         
     final_prompt = prompt 
-    # Add start token if specific model needs it, otherwise raw prompt is usually fine
-    # final_prompt += "<start_of_turn>model\n" 
 
-    # 4. Generation Config
-    # Map generic config to specific parameters
     generation_config = {
-        "temperature": llm_config.get("temperature", 0.95),
+        "temperature": llm_config.get("temperature", 1.0),
         "top_p": llm_config.get("top_p", 0.95),
         "max_output_tokens": llm_config.get("max_output_tokens", 4096)
     }

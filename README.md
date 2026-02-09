@@ -20,7 +20,7 @@ This repo contains implementation for the [PACEvolve](https://arxiv.org/pdf/2601
 Before installing `PACEvolve` you need:
 
 * **Python 3.9** or later
-* **Google Gemini API Key** (for `google.generativeai`)
+* We support OpenAI / Anthropic / Google Gemini APIs. You should have at least one API key available, more installation instructions can be found below.
 * **Git**
 
 The project relies on specific directory structures to locate tasks and configurations. Ensure your project root contains:

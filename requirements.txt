@@ -1,4 +1,4 @@
 dataclasses
-google-generativeai
 pyyaml
 numpy
+tiktoken
