@@ -96,9 +96,8 @@ def load_class_from_file(path, class_name="LLMSR"):
 
 def main():
     """Parses arguments, runs candidate and baseline, and prints the diff."""
-    parser = argparse.ArgumentParser(description="Evaluate a consistent hashing algorithm.")
-    # These will be passed from the EvalConfig for consistent_hashing
-    parser.add_argument("--data_path", type=str, required=False, default="/your/data/path")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--dataset", type=str, required=False, default=None)
     parser.add_argument("--output", type=str, required=False, default="trial_results.pkl")
     parser.add_argument("--problem_idx", type=int, required=False, default=0)
