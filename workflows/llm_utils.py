@@ -159,6 +159,32 @@ if OPENAI_AVAILABLE:
             }
             response = self.client.chat.completions.create(**params)
             return response.choices[0].message.content
+    
+    
+    class OllamaClient(LLMClient):
+        """Ollama local LLM via OpenAI-compatible API (http://localhost:11434/v1)."""
+
+        def __init__(self, config: Dict[str, Any]):
+            super().__init__(config)
+            self.model_name = self.config.get("name", "llama3.2")
+            base_url = self.config.get("base_url", "http://localhost:11434/v1")
+            self.client = OpenAI(
+                base_url=base_url,
+                api_key=self.config.get("api_key", "ollama"),
+            )
+
+        def count_tokens(self, text: str) -> int:
+            """Approximate token count (~4 chars/token for most models)."""
+            return max(1, len(text) // 4)
+
+        def generate(self, prompt: str, generation_config: Dict[str, Any]) -> str:
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=generation_config.get("temperature", 1.0),
+                max_tokens=generation_config.get("max_output_tokens", 16384),
+            )
+            return response.choices[0].message.content or ""
 
 # --- Anthropic Client ---
 try:
