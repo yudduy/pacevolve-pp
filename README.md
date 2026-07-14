@@ -74,6 +74,22 @@ To run the evolutionary process, execute the script with a specific task_id. Thi
 python run_experiment.py --task_id "my_task"
 ```
 
+### 4. PACEvolve++ (advisor-RL)
+
+[PACEvolve++](https://arxiv.org/pdf/2605.07039) splits the LLM into a trainable *advisor* (which selects an idea) and a stronger *implementer* (which writes the code), and adds a search-dynamics-aware reinforcement-learning objective. Run it with the dedicated driver:
+
+```bash
+cd workflows
+python run_advisor_rl.py --task_id eplb --backend mock --objective pacevolve++ --max_steps 2
+```
+
+Add `advisor_llm` / `implementer_llm` sections to the task config to give the two roles different models — e.g. a small local model for the advisor (`client_type: ollama` + `base_url` pointing at a vLLM/Ollama server) and a frontier model for the implementer. The `rl` section selects the objective (`pacevolve++`, `grpo`, `entropic`, `maxk`, `none`). The RL layer has a pytest suite:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install numpy pytest pyyaml
+.venv/bin/pytest
+```
+
 ---
 
 ## Support & Contribution
