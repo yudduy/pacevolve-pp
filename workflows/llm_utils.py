@@ -238,6 +238,8 @@ def get_llm_client(llm_name: str, config: Dict[str, Any]) -> LLMClient:
         client_type = 'anthropic'
     elif 'gemini' in llm_name:
         client_type = 'gemini'
+    elif 'ollama' in llm_name:
+        client_type = 'ollama'
 
     client = None
     if client_type == 'gemini' and GEMINI_AVAILABLE:
@@ -246,6 +248,10 @@ def get_llm_client(llm_name: str, config: Dict[str, Any]) -> LLMClient:
         client = OpenAIClient(llm_config)
     elif client_type == 'anthropic' and ANTHROPIC_AVAILABLE:
         client = AnthropicClient(llm_config)
+    elif client_type == 'ollama' and OPENAI_AVAILABLE:
+        # OpenAI-compatible local endpoint (e.g. Ollama or a vLLM server); the
+        # base_url is read from the llm config, enabling small-model advisors.
+        client = OllamaClient(llm_config)
     else:
         raise ValueError(f"Unsupported or missing client type: {client_type}")
 
