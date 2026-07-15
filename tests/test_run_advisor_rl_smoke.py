@@ -16,11 +16,14 @@
 end against the fake task with a scripted LLM (no network) and a mock policy
 backend, asserting the paper's population-update-before-policy-update order."""
 
+from copy import deepcopy
 import importlib
 import os
 import shutil
+import sys
 import types
 
+import pytest
 import yaml
 
 import idea_select_utils
@@ -29,7 +32,13 @@ import rl_rewards
 import run_advisor_rl
 import task_utils
 from program_database import ProgramsDatabase, ProgramsDatabaseConfig
-from rl_trainer import AdvisorTrainer, AdvisorTrainerConfig, MockPolicyBackend
+from rl_trainer import (
+    AdvisorTrainer,
+    AdvisorTrainerConfig,
+    MockPolicyBackend,
+    RolloutGroup,
+    RolloutSample,
+)
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _FIX = os.path.join(_REPO, "tests", "fixtures", "tasks", "fake_task")
@@ -142,3 +151,141 @@ def test_smoke_none_objective_performs_no_updates(tmp_path, monkeypatch):
     assert order.count("update") == 0
     assert len(backend.update_calls) == 0
     assert order.count("register") >= 4  # candidates still enter the population
+
+
+def test_barrier_merges_all_successful_idea_forks(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    order = []
+    db, idea_repo_db, prompts, trainer, backend, cc, ec, rc, args = _harness(
+        config, "none", monkeypatch, order
+    )
+    args.n_samples = 3
+    args.max_steps = 2
+    next_step_descriptions = []
+
+    def fake_build_rollout_group(step, *unused_args, **unused_kwargs):
+        if step == 1:
+            next_step_descriptions.extend(
+                idea.description
+                for idea in idea_repo_db.idea_repos[0][-1].ideas
+            )
+            return RolloutGroup(step=step, samples=[])
+
+        samples = []
+        for index in range(3):
+            fork = deepcopy(idea_repo_db.idea_repos[0][-1])
+            idea = idea_select_utils.Idea(
+                id=fork.get_next_id(), description=f"distinct idea {index}"
+            )
+            fork.ideas.append(idea)
+            samples.append(
+                RolloutSample(
+                    island_id=0,
+                    response_text=f"advisor response {index}",
+                    program_text=f"implementer program {index}",
+                    idea_id=idea.id,
+                    exp_description=f"experiment {index}",
+                    raw_score=2.0 + index,
+                    reward=float(index),
+                    eval_success=True,
+                    updated_idea_repo=fork,
+                )
+            )
+        return RolloutGroup(step=step, samples=samples)
+
+    monkeypatch.setattr(
+        run_advisor_rl, "build_rollout_group", fake_build_rollout_group
+    )
+    run_advisor_rl.run_evolution(
+        config,
+        args,
+        db,
+        idea_repo_db,
+        prompts,
+        trainer,
+        "advisor",
+        "implementer",
+        cc,
+        ec,
+        rc,
+    )
+
+    assert next_step_descriptions == [
+        "distinct idea 0",
+        "distinct idea 1",
+        "distinct idea 2",
+    ]
+    merged = idea_repo_db.idea_repos[0][-1]
+    assert len(idea_repo_db.idea_repos[0]) == 2
+    assert [idea.exp_count for idea in merged.ideas] == [1, 1, 1]
+    assert [idea.exp_history for idea in merged.ideas] == [
+        ["score=2.0000 — experiment 0"],
+        ["score=3.0000 — experiment 1"],
+        ["score=4.0000 — experiment 2"],
+    ]
+    registered_programs = {
+        program for _, program in db._islands[0]._candidates
+    }
+    assert {
+        "implementer program 0",
+        "implementer program 1",
+        "implementer program 2",
+    } <= registered_programs
+
+
+def test_main_rejects_invalid_objective(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_advisor_rl.py", "--task_id", "fake_task", "--objective", "bad"],
+    )
+    with pytest.raises(SystemExit):
+        run_advisor_rl.main()
+    assert "invalid choice" in capsys.readouterr().err
+
+
+def test_main_rejects_unimplemented_torch_backend(
+    tmp_path, monkeypatch, capsys
+):
+    config = _config(tmp_path)
+    monkeypatch.setattr(
+        run_advisor_rl.run_experiment,
+        "load_configs",
+        lambda path: (config, None, [], None),
+    )
+    monkeypatch.setattr(run_advisor_rl.rl_trainer, "TORCH_AVAILABLE", True)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_advisor_rl.py", "--task_id", "fake_task", "--backend", "torch"],
+    )
+    with pytest.raises(SystemExit):
+        run_advisor_rl.main()
+    assert "use --backend mock" in capsys.readouterr().err
+
+
+def test_main_accepts_none_rl_section(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    config["rl"] = None
+    config["paths"]["log_dir"] = str(tmp_path / "logs")
+    config["paths"]["transcript_dir"] = str(tmp_path / "transcripts")
+    monkeypatch.setattr(
+        run_advisor_rl.run_experiment,
+        "load_configs",
+        lambda path: (config, None, [], None),
+    )
+    called = []
+    monkeypatch.setattr(
+        run_advisor_rl,
+        "run_evolution",
+        lambda *args, **kwargs: called.append(True),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_advisor_rl.py", "--task_id", "fake_task", "--max_steps", "0"],
+    )
+
+    run_advisor_rl.main()
+
+    assert called == [True]

@@ -73,7 +73,7 @@ def build_rollout_sample(
             prompts.construct_idea_gen_prompt(parent, idea_repo),
         )
 
-    idea_id, exp_desc, raw = advisor_utils.select_idea_no_code(
+    idea_id, exp_desc, raw, prompt = advisor_utils.select_idea_no_code(
         advisor,
         transcript,
         prompts,
@@ -84,7 +84,7 @@ def build_rollout_sample(
     if (idea_id, exp_desc, raw) == (None, None, None):
         return rl_trainer.RolloutSample(
             island_id=island_id,
-            prompt_text=raw or "",
+            prompt_text=prompt or "",
             response_text="",
             idea_id=idea_id or -1,
             exp_description=exp_desc or "",
@@ -116,14 +116,15 @@ def build_rollout_sample(
 
     return rl_trainer.RolloutSample(
         island_id=island_id,
-        prompt_text=raw or "",
-        response_text=trial.algorithm_implementation,
+        prompt_text=prompt or "",
+        response_text=raw or "",
         idea_id=idea_id or -1,
         exp_description=exp_desc or "",
         raw_score=raw_score,
         eval_success=evaluation_completed and raw_score is not None,
         response_mask=None,
         updated_idea_repo=idea_repo,
+        program_text=trial.algorithm_implementation,
     )
 
 
@@ -197,7 +198,7 @@ def run_evolution(
         for sample in group.samples:
             if sample.eval_success and sample.raw_score is not None:
                 db.register_program(
-                    program=sample.response_text,
+                    program=sample.program_text,
                     island_id=sample.island_id,
                     score=sample.raw_score,
                 )
@@ -207,12 +208,57 @@ def run_evolution(
                 idea_repo_db.scheduler.update_score(
                     sample.island_id, sample.raw_score
                 )
-                # Persist the accumulated idea repo so the pool + experiment
-                # history grow across steps (matching run_experiment.py).
-                if sample.updated_idea_repo is not None:
-                    idea_repo_db.idea_repos[sample.island_id].append(
-                        sample.updated_idea_repo
-                    )
+
+        # Merge successful rollout forks into one pool per island and record a
+        # lightweight per-idea experiment log without LLM summarization.
+        for island_id in range(idea_repo_db.num_islands):
+            successful_samples = [
+                sample
+                for sample in group.samples
+                if sample.island_id == island_id
+                and sample.eval_success
+                and sample.raw_score is not None
+                and sample.updated_idea_repo is not None
+            ]
+            if not successful_samples:
+                continue
+
+            base = deepcopy(idea_repo_db.idea_repos[island_id][-1])
+            descriptions = {idea.description for idea in base.ideas}
+            for sample in successful_samples:
+                for idea in sample.updated_idea_repo.ideas:
+                    if idea.description in descriptions:
+                        continue
+                    new_idea = deepcopy(idea)
+                    new_idea.id = base.get_next_id()
+                    base.ideas.append(new_idea)
+                    descriptions.add(new_idea.description)
+
+            for sample in successful_samples:
+                selected_idea = sample.updated_idea_repo.find_idea_by_id(
+                    sample.idea_id
+                )
+                if selected_idea is None:
+                    continue
+                matching_idea = next(
+                    (
+                        idea
+                        for idea in base.ideas
+                        if idea.description == selected_idea.description
+                    ),
+                    None,
+                )
+                if matching_idea is None:
+                    continue
+                exp_description = " ".join(
+                    sample.exp_description.split()
+                )[:200]
+                matching_idea.exp_history.append(
+                    f"score={sample.raw_score:.4f} — {exp_description}"
+                )
+                matching_idea.exp_count += 1
+
+            idea_repo_db.idea_repos[island_id].append(base)
 
         result = trainer.train_step(group)
         rewards = group.rewards()
@@ -238,7 +284,11 @@ def main() -> None:
     parser.add_argument("--task_id", "-t", required=True)
     parser.add_argument("--dataset_id", "-d", default=".")
     parser.add_argument("--run_id", "-r", type=int, default=1)
-    parser.add_argument("--objective", default=None)
+    parser.add_argument(
+        "--objective",
+        choices=("pacevolve++", "grpo", "entropic", "maxk", "none"),
+        default=None,
+    )
     parser.add_argument(
         "--backend", choices=("mock", "torch"), default=None
     )
@@ -260,7 +310,7 @@ def main() -> None:
     )
 
     trainer_config = rl_trainer.AdvisorTrainerConfig.from_config(config)
-    rl_config = config.get("rl", {})
+    rl_config = config.get("rl") or {}
     if args.objective is None:
         args.objective = trainer_config.objective
     if args.backend is None:
@@ -269,6 +319,11 @@ def main() -> None:
         args.n_samples = trainer_config.n_samples
     if args.max_steps is None:
         args.max_steps = trainer_config.total_steps
+    if args.backend == "torch" and rl_trainer.TORCH_AVAILABLE:
+        parser.error(
+            "TorchPolicyBackend is a documented unimplemented seam; "
+            "use --backend mock"
+        )
 
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter(
@@ -343,14 +398,11 @@ def main() -> None:
     trainer_config.objective = args.objective
     trainer_config.total_steps = args.max_steps
     trainer_config.n_samples = args.n_samples
-    if args.backend == "torch" and rl_trainer.TORCH_AVAILABLE:
-        backend = rl_trainer.TorchPolicyBackend(config)
-    else:
-        if args.backend == "torch":
-            logger.warning(
-                "Torch is unavailable; falling back to the mock backend."
-            )
-        backend = rl_trainer.MockPolicyBackend(config)
+    if args.backend == "torch":
+        logger.warning(
+            "Torch is unavailable; falling back to the mock backend."
+        )
+    backend = rl_trainer.MockPolicyBackend(config)
     trainer = rl_trainer.AdvisorTrainer(trainer_config, backend)
 
     advisor = advisor_utils.make_role_config(config, "advisor")["llm"][

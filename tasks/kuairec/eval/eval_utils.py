@@ -54,15 +54,15 @@ def evaluate_dataset(
 
 def parse_eval_results(
     eval_results: list[str] | str,
-) -> list[float] | float | None:
-    """Extract score values from future `Candidate: {...}` output."""
+) -> float | None:
+    """Extract one score or the mean across dataset outputs."""
 
     if isinstance(eval_results, str):
-        match = _CANDIDATE_RE.search(eval_results)
-        if not match:
+        matches = list(_CANDIDATE_RE.finditer(eval_results))
+        if not matches:
             return None
         try:
-            data = ast.literal_eval(match.group(1))
+            data = ast.literal_eval(matches[-1].group(1))
             return float(data["score"])
         except (ValueError, SyntaxError, KeyError, TypeError):
             return None
@@ -74,6 +74,6 @@ def parse_eval_results(
             return scores[0]
         if not scores:
             return None
-        return scores
+        return float(sum(scores) / len(scores))
 
     raise ValueError("Input must be a string or a list of strings.")

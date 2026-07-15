@@ -19,6 +19,8 @@ leave-one-out advantage A_i = exp(beta*(R_i - Rmax))/(Z_-i + eps) - 1, with
 Z_-i = mean_{j!=i} exp(beta*(R_j - Rmax)).
 """
 
+import logging
+
 import numpy as np
 import pytest
 
@@ -89,3 +91,17 @@ def test_large_reward_spread_no_overflow():
     R = np.array([0.0, 500.0, 1000.0])  # shifted exponents must avoid overflow
     A = entropic_advantage(R, 0.5)
     assert np.all(np.isfinite(A))
+
+
+def test_gamma_above_log_n_is_safely_clamped(caplog):
+    with caplog.at_level(logging.WARNING, logger="controller"):
+        advantages = entropic_advantage([0.0, 5.0], gamma=1.0)
+    assert np.all(np.isfinite(advantages))
+    assert np.max(np.abs(advantages)) < 1e3
+    assert "clamping" in caplog.text
+
+
+def test_unreachable_bracket_target_warns(caplog):
+    with caplog.at_level(logging.WARNING, logger="controller"):
+        solve_entropic_beta([0.0, 1e-12], gamma=0.1)
+    assert "unreachable within the bracket cap" in caplog.text

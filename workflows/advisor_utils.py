@@ -40,6 +40,7 @@ def select_idea_no_code(
     config: dict,
     max_attempts: int = 3,
 ):
+    prompt = None
     for attempt in range(max_attempts):
         prompt_tag = f"idea_select_no_code_{attempt}"
         response_tag = f"idea_select_response_{attempt}"
@@ -64,9 +65,9 @@ def select_idea_no_code(
             transcript.hide_by_tag([prompt_tag, response_tag])
             continue
 
-        return idea_id, exp_description, response
+        return idea_id, exp_description, response, prompt
 
-    return None, None, None
+    return None, None, None, prompt
 
 
 def implement_idea(

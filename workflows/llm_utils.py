@@ -221,28 +221,34 @@ if ANTHROPIC_AVAILABLE:
 
 # --- Client Factory and Cache ---
 
-_CLIENT_CACHE: Dict[str, LLMClient] = {}
+_CLIENT_CACHE: Dict[tuple, LLMClient] = {}
 
 def get_llm_client(llm_name: str, config: Dict[str, Any]) -> LLMClient:
     """Singleton pattern to retrieve or create LLM clients."""
     llm_config = config.get('llm', {})
-    # Cache by (name, base_url) so two roles that share a model name but target
-    # different endpoints (advisor vs implementer) don't collide on one client.
-    cache_key = (llm_name, llm_config.get('base_url'))
+    # Cache by (name, base_url, client_type) so two roles that share a model
+    # name don't collide when either their endpoint or client type differs.
+    cache_key = (
+        llm_name,
+        llm_config.get('base_url'),
+        llm_config.get('client_type'),
+    )
     if cache_key in _CLIENT_CACHE:
         return _CLIENT_CACHE[cache_key]
 
     client_type = llm_config.get('client_type', 'gemini')
     
-    # Override client_type based on model name if user just switched the name
-    if 'gpt' in llm_name or 'openai' in llm_name:
-        client_type = 'openai'
-    elif 'claude' in llm_name or 'anthropic' in llm_name:
-        client_type = 'anthropic'
-    elif 'gemini' in llm_name:
-        client_type = 'gemini'
-    elif 'ollama' in llm_name:
-        client_type = 'ollama'
+    # Override client_type based on model name if user just switched the name.
+    # Explicit local endpoints may serve models with arbitrary provider names.
+    if llm_config.get('client_type') != 'ollama':
+        if 'gpt' in llm_name or 'openai' in llm_name:
+            client_type = 'openai'
+        elif 'claude' in llm_name or 'anthropic' in llm_name:
+            client_type = 'anthropic'
+        elif 'gemini' in llm_name:
+            client_type = 'gemini'
+        elif 'ollama' in llm_name:
+            client_type = 'ollama'
 
     client = None
     if client_type == 'gemini' and GEMINI_AVAILABLE:

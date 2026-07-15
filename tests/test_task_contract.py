@@ -69,12 +69,11 @@ def _multi_evolve_eval():
 
 def test_multi_evolve_combined_score_formula():
     ev = _multi_evolve_eval()
-    y_true = np.array([5.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0])
-    y_pred = np.array([4.9, 4.1, 2.8, 2.2, 0.9, 0.1, -1.2, -1.8])
-    r = ev.pearson_r(y_true, y_pred)
-    p5 = ev.precision_at_5(y_true, y_pred)
-    assert 0.0 <= p5 <= 1.0
-    assert ev.combined_score(y_true, y_pred) == pytest.approx(0.7 * r + 0.3 * p5)
+    y_true = np.arange(6.0)
+    y_pred = y_true[::-1]
+    assert ev.combined_score(y_true, y_pred) == pytest.approx(
+        0.7 * -1.0 + 0.3 * (4 / 5)
+    )
 
 
 def test_multi_evolve_precision_at_5_perfect_ranking():
@@ -86,6 +85,38 @@ def test_multi_evolve_precision_at_5_perfect_ranking():
 def test_multi_evolve_pearson_constant_is_zero():
     ev = _multi_evolve_eval()
     assert ev.pearson_r(np.array([1.0, 1.0, 1.0]), np.array([1.0, 2.0, 3.0])) == 0.0
+
+
+def test_multi_evolve_pearson_anticorrelated_is_negative_one():
+    ev = _multi_evolve_eval()
+    assert ev.pearson_r([1.0, 2.0, 3.0, 4.0], [4.0, 3.0, 2.0, 1.0]) == pytest.approx(-1.0)
+
+
+def test_multi_evolve_precision_at_5_known_overlap():
+    ev = _multi_evolve_eval()
+    y_true = np.arange(10.0)
+    y_pred = np.array([5.0, 6.0, 7.0, 2.0, 1.0, 0.0, 3.0, 4.0, 8.0, 9.0])
+    assert ev.precision_at_5(y_true, y_pred) == pytest.approx(2 / 5)
+
+
+@pytest.mark.parametrize("task", NEW_TASKS)
+def test_parse_eval_results_uses_last_candidate_line(task):
+    eval_utils = importlib.import_module(f"tasks.{task}.eval.eval_utils")
+    output = (
+        "Candidate: {'score': 1.0, 'valid': True}\n"
+        "Candidate: {'score': 0.25, 'valid': True}"
+    )
+    assert eval_utils.parse_eval_results(output) == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("task", ["kuairec", "multi_evolve"])
+def test_parse_eval_results_means_multiple_datasets(task):
+    eval_utils = importlib.import_module(f"tasks.{task}.eval.eval_utils")
+    outputs = [
+        "Candidate: {'score': 0.5}",
+        "Candidate: {'score': 0.7}",
+    ]
+    assert eval_utils.parse_eval_results(outputs) == pytest.approx(0.6)
 
 
 # --- KuaiRec is a contract-only skeleton (not runnable) ------------------

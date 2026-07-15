@@ -18,11 +18,14 @@ split, driven end-to-end against the fake task with a scripted LLM client."""
 import importlib
 import os
 import shutil
+import types
 
 import yaml
+import pytest
 
 import advisor_utils
 import llm_utils
+import run_advisor_rl
 import task_utils
 from idea_select_utils import Idea, IdeaRepo
 
@@ -97,11 +100,14 @@ def test_select_idea_no_code_parses_valid_response():
     repo = IdeaRepo(ideas=[Idea(id=2, description="scaling")])
     advisor = FakeLLMClient(["Idea ID: 2\nExperiment description: try scaling x2"])
     transcript = llm_utils.Transcript()
-    idea_id, desc, raw = advisor_utils.select_idea_no_code(
+    idea_id, desc, raw, prompt = advisor_utils.select_idea_no_code(
         advisor, transcript, prompts, prompts.FAKE_SOTA, repo, {"llm": {}})
     assert idea_id == 2
     assert "scaling" in desc
     assert raw is not None
+    assert prompt == prompts.construct_idea_select_no_code_prompt(
+        prompts.FAKE_SOTA, repo
+    )
 
 
 def test_select_idea_no_code_retries_on_malformed():
@@ -110,19 +116,123 @@ def test_select_idea_no_code_retries_on_malformed():
     advisor = FakeLLMClient(["garbage without an id",
                              "Idea ID: 1\nExperiment description: do it"])
     transcript = llm_utils.Transcript()
-    idea_id, desc, raw = advisor_utils.select_idea_no_code(
+    idea_id, desc, raw, prompt = advisor_utils.select_idea_no_code(
         advisor, transcript, prompts, prompts.FAKE_SOTA, repo, {"llm": {}}, max_attempts=3)
     assert idea_id == 1
     assert advisor.calls == 2  # one failed attempt, then success
+    assert prompt is not None
 
 
 def test_select_idea_no_code_gives_up_after_max_attempts():
     prompts = _prompts()
     repo = IdeaRepo(ideas=[Idea(id=1, description="x")])
     advisor = FakeLLMClient(["still no id"])
-    idea_id, desc, raw = advisor_utils.select_idea_no_code(
+    idea_id, desc, raw, prompt = advisor_utils.select_idea_no_code(
         advisor, llm_utils.Transcript(), prompts, prompts.FAKE_SOTA, repo, {"llm": {}}, max_attempts=2)
     assert idea_id is None and desc is None and raw is None
+    assert prompt == prompts.construct_idea_select_no_code_prompt(
+        prompts.FAKE_SOTA, repo
+    )
+
+
+def test_build_rollout_sample_records_advisor_and_program_text(monkeypatch):
+    prompts = _prompts()
+    repo = IdeaRepo(ideas=[Idea(id=2, description="scaling")])
+    idea_repo_db = types.SimpleNamespace(idea_repos=[[repo]])
+    db = types.SimpleNamespace(
+        get_candidate=lambda: (prompts.FAKE_SOTA, 0)
+    )
+    raw_response = "Idea ID: 2\nExperiment description: try scaling x2"
+    monkeypatch.setattr(
+        llm_utils,
+        "generate_completion",
+        lambda advisor, transcript, config: raw_response,
+    )
+    trial = types.SimpleNamespace(
+        compile_success=True,
+        eval_success=[True],
+        eval_results=["Candidate: {'score': 3.0}"],
+        algorithm_implementation="def solve(x):\n    return x * 2\n",
+    )
+    monkeypatch.setattr(
+        advisor_utils, "implement_idea", lambda *args, **kwargs: trial
+    )
+    config = {
+        "llm": {"name": "fake"},
+        "experiment": {
+            "task_id": "fake_task",
+            "initial_baseline_id": -1,
+        },
+    }
+    args = types.SimpleNamespace(
+        _transcript_file=None, use_idea_repo=False, n_samples=1
+    )
+
+    sample = run_advisor_rl.build_rollout_sample(
+        0,
+        0,
+        config,
+        args,
+        db,
+        idea_repo_db,
+        prompts,
+        "advisor",
+        "implementer",
+        None,
+        [],
+        None,
+    )
+
+    assert sample.prompt_text.startswith("Select an idea to test")
+    assert sample.response_text == raw_response
+    assert sample.program_text == trial.algorithm_implementation
+    assert sample.raw_score == pytest.approx(3.0)
+    assert sample.eval_success
+
+
+def test_build_rollout_sample_keeps_prompt_on_advisor_failure(monkeypatch):
+    prompts = _prompts()
+    idea_repo_db = types.SimpleNamespace(
+        idea_repos=[[IdeaRepo(ideas=[Idea(id=1, description="scaling")])]]
+    )
+    db = types.SimpleNamespace(
+        get_candidate=lambda: (prompts.FAKE_SOTA, 0)
+    )
+    monkeypatch.setattr(
+        llm_utils,
+        "generate_completion",
+        lambda advisor, transcript, config: "malformed",
+    )
+    config = {
+        "llm": {"name": "fake"},
+        "experiment": {
+            "task_id": "fake_task",
+            "initial_baseline_id": -1,
+        },
+    }
+    args = types.SimpleNamespace(
+        _transcript_file=None, use_idea_repo=False, n_samples=1
+    )
+
+    sample = run_advisor_rl.build_rollout_sample(
+        0,
+        0,
+        config,
+        args,
+        db,
+        idea_repo_db,
+        prompts,
+        "advisor",
+        "implementer",
+        None,
+        [],
+        None,
+    )
+
+    assert sample.prompt_text.startswith("Select an idea to test")
+    assert sample.response_text == ""
+    assert sample.program_text == ""
+    assert not sample.eval_success
 
 
 # --- implement_idea -------------------------------------------------------

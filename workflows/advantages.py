@@ -120,11 +120,18 @@ def _entropic_kl(rewards, beta):
 def solve_entropic_beta(rewards, gamma, tol=1e-8, max_iter=200) -> float:
     """Solve for beta whose tilted distribution has the requested KL."""
     rewards = np.asarray(rewards, dtype=float)
+    requested_gamma = float(gamma)
+    max_gamma = 0.9 * math.log(len(rewards))
+    if requested_gamma > max_gamma:
+        logger.warning(
+            "Requested entropic gamma %.6g exceeds the safe maximum; "
+            "clamping it to %.6g.",
+            requested_gamma,
+            max_gamma,
+        )
+    gamma = min(max(requested_gamma, 0.0), max_gamma)
     if rewards.max() == rewards.min():
         return 0.0
-
-    max_gamma = (1.0 - 1e-9) * math.log(len(rewards))
-    gamma = min(max(float(gamma), 0.0), max_gamma)
     if gamma <= 0.0:
         return 0.0
 
@@ -132,6 +139,12 @@ def solve_entropic_beta(rewards, gamma, tol=1e-8, max_iter=200) -> float:
     hi = 1.0
     while hi <= 1e6 and _entropic_kl(rewards, hi) < gamma:
         hi *= 2.0
+    if _entropic_kl(rewards, hi) < gamma:
+        logger.warning(
+            "Entropic KL target %.6g is unreachable within the bracket cap; "
+            "the returned beta undershoots it.",
+            gamma,
+        )
 
     for _ in range(max_iter):
         beta = (lo + hi) / 2.0

@@ -123,11 +123,11 @@ def evaluate_dataset(
 
 def parse_eval_results(eval_results: list[str] | str) -> float | None:
     if isinstance(eval_results, str):
-        match = _CANDIDATE_RE.search(eval_results)
-        if not match:
+        matches = list(_CANDIDATE_RE.finditer(eval_results))
+        if not matches:
             return None
         try:
-            result = ast.literal_eval(match.group(1))
+            result = ast.literal_eval(matches[-1].group(1))
             return float(result["score"])
         except (ValueError, SyntaxError, KeyError, TypeError):
             return None

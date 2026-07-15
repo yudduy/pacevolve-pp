@@ -83,9 +83,10 @@ cd workflows
 python run_advisor_rl.py --task_id eplb --backend mock --objective pacevolve++ --max_steps 2
 ```
 
-Add `advisor_llm` / `implementer_llm` sections to the task config to give the two roles different models — e.g. a small local model for the advisor (`client_type: ollama` + `base_url` pointing at a vLLM/Ollama server) and a frontier model for the implementer. The `rl` section selects the objective (`pacevolve++`, `grpo`, `entropic`, `maxk`, `none`). The RL layer has a pytest suite:
+Add `advisor_llm` / `implementer_llm` sections to the task config to give the two roles different models — e.g. a small local model for the advisor (`client_type: ollama` + `base_url` pointing at a vLLM/Ollama server) and a frontier model for the implementer. The `rl` section selects the objective (`pacevolve++`, `grpo`, `entropic`, `maxk`, `none`). Run the RL layer's pytest suite from the repository root:
 
 ```bash
+cd ..
 python3 -m venv .venv && .venv/bin/pip install numpy pytest pyyaml
 .venv/bin/pytest
 ```

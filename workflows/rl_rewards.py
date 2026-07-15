@@ -50,13 +50,13 @@ class RewardShapingConfig:
     def from_config(cls, config: dict) -> "RewardShapingConfig":
         """Build reward settings from an experiment configuration."""
         evaluation = config["evaluation"]
-        reward = config.get("rl", {}).get("reward", {})
+        reward = (config.get("rl") or {}).get("reward") or {}
         return cls(
             metric_direction=evaluation["metric_direction"],
-            y_init=evaluation["init_score"],
-            y_target=evaluation["target_score"],
-            scale_c=reward.get("scale_c", 5.0),
-            alpha_r=reward.get("alpha_r", 1.0),
+            y_init=float(evaluation["init_score"]),
+            y_target=float(evaluation["target_score"]),
+            scale_c=float(reward.get("scale_c", 5.0)),
+            alpha_r=float(reward.get("alpha_r", 1.0)),
         )
 
 

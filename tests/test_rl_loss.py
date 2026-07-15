@@ -80,6 +80,20 @@ def test_mask_excludes_tokens():
     assert res.per_token[0, 2] == 0.0 and res.per_token[1, 1] == 0.0
 
 
+def test_nonfinite_ratio_at_masked_position_cannot_poison_loss():
+    new = np.array([[0.0, 1000.0]])
+    old = np.zeros((1, 2))
+    mask = np.array([[1.0, 0.0]])
+    with np.errstate(over="ignore", invalid="ignore"):
+        poisoned = policy_loss_from_logprobs(new, old, [2.0], mask)
+        baseline = policy_loss_from_logprobs(
+            new[:, :1], old[:, :1], [2.0], mask[:, :1]
+        )
+    assert np.isfinite(poisoned.loss)
+    assert poisoned.loss == pytest.approx(baseline.loss)
+    assert poisoned.per_token[0, 1] == 0.0
+
+
 def test_empty_mask_is_safe():
     res = clipped_surrogate_loss(np.ones((2, 2)), np.array([1.0, 2.0]), np.zeros((2, 2)))
     assert res.num_valid_tokens == 0

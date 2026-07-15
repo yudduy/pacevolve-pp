@@ -94,7 +94,10 @@ def test_shape_reward_custom_scale_and_exponent():
 
 # --- shape_reward: failure branch ----------------------------------------
 
-@pytest.mark.parametrize("bad", [None, float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    "bad",
+    [None, float("nan"), float("inf"), float("-inf"), "abc", [1, 2]],
+)
 def test_shape_reward_failure_maps_to_minus_one(bad):
     cfg = RewardShapingConfig(metric_direction="max", y_init=1, y_target=5)
     assert shape_reward(bad, cfg) == -1.0
@@ -152,6 +155,34 @@ def test_from_config_minimize_and_reward_defaults():
     assert cfg.metric_direction == "min"
     assert (cfg.y_min, cfg.y_max) == (-10, -2)
     assert cfg.scale_c == 5.0 and cfg.alpha_r == 1.0  # documented defaults
+
+
+def test_from_config_accepts_none_rl_section():
+    config = {
+        "evaluation": {
+            "init_score": "1.0",
+            "target_score": "3.0",
+            "metric_direction": "max",
+        },
+        "rl": None,
+    }
+    cfg = RewardShapingConfig.from_config(config)
+    assert (cfg.y_init, cfg.y_target) == (1.0, 3.0)
+    assert cfg.scale_c == 5.0 and cfg.alpha_r == 1.0
+
+
+def test_from_config_coerces_reward_numeric_strings():
+    config = {
+        "evaluation": {
+            "init_score": "1.0",
+            "target_score": "3.0",
+            "metric_direction": "max",
+        },
+        "rl": {"reward": {"scale_c": "5.0", "alpha_r": "2.0"}},
+    }
+    cfg = RewardShapingConfig.from_config(config)
+    assert cfg.scale_c == 5.0 and isinstance(cfg.scale_c, float)
+    assert cfg.alpha_r == 2.0 and isinstance(cfg.alpha_r, float)
 
 
 # --- shape_rewards: vectorized -------------------------------------------

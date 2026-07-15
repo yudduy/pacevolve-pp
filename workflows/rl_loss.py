@@ -74,7 +74,9 @@ def clipped_surrogate_loss(
     clipped = np.clip(
         ratios, 1.0 - clip.eps_lo, 1.0 + clip.eps_hi
     ) * token_advantages
-    per_token = np.minimum(unclipped, clipped) * mask
+    per_token = np.where(
+        mask > 0, np.minimum(unclipped, clipped), 0.0
+    )
 
     num_valid_tokens = int(mask.sum())
     if num_valid_tokens == 0:

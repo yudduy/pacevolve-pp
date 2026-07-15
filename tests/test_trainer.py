@@ -123,6 +123,52 @@ def test_config_from_config():
     assert cfg.clip.eps_lo == 0.1 and cfg.clip.eps_hi == 0.3
 
 
+def test_config_from_none_rl_section_uses_defaults():
+    cfg = AdvisorTrainerConfig.from_config({"rl": None})
+    assert cfg == AdvisorTrainerConfig()
+
+
+def test_config_from_config_coerces_yaml_numeric_strings():
+    config = {
+        "rl": {
+            "n_samples": "8",
+            "top_k": "4",
+            "total_steps": "1000",
+            "eps_num": "1e-8",
+            "eps_skip": "1e-6",
+            "entropic_gamma": "0.5",
+            "clip_eps_lo": "0.2",
+            "clip_eps_hi": "0.28",
+        }
+    }
+    cfg = AdvisorTrainerConfig.from_config(config)
+    assert (cfg.n_samples, cfg.top_k, cfg.total_steps) == (8, 4, 1000)
+    assert cfg.eps_num == pytest.approx(1e-8)
+    assert cfg.eps_skip == pytest.approx(1e-6)
+    assert cfg.entropic_gamma == pytest.approx(0.5)
+    assert cfg.clip.eps_lo == pytest.approx(0.2)
+    assert cfg.clip.eps_hi == pytest.approx(0.28)
+    assert isinstance(cfg.eps_num, float)
+
+
+def test_bad_objective_raises_at_construction():
+    with pytest.raises(ValueError, match="objective must be one of"):
+        AdvisorTrainer(
+            AdvisorTrainerConfig(objective="unknown"),
+            MockPolicyBackend({}),
+        )
+
+
+def test_oversized_subset_enumeration_raises_at_construction():
+    with pytest.raises(ValueError, match="lower n_samples or top_k"):
+        AdvisorTrainer(
+            AdvisorTrainerConfig(
+                objective="pacevolve++", n_samples=24, top_k=12
+            ),
+            MockPolicyBackend({}),
+        )
+
+
 def test_backend_llm_client_generates_and_counts():
     class Echo(MockPolicyBackend):
         def generate(self, prompt, generation_config):

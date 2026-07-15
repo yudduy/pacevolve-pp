@@ -82,3 +82,26 @@ def test_mixresult_reports_alpha_and_branches():
     assert res.a_group_std is not None
     assert res.a_topk_std is not None
     assert res.advantages.shape == R.shape
+
+
+def test_k_one_with_active_topk_branch_skips():
+    res = phase_adaptive_mix([0.0, 1.0, 2.0], k=1, alpha_t=0.5)
+    assert res.skip_update
+    assert "top-k" in res.skip_reason
+
+
+def test_k_one_with_zero_alpha_returns_group_branch():
+    rewards = np.array([0.0, 1.0, 2.0])
+    res = phase_adaptive_mix(rewards, k=1, alpha_t=0.0)
+    assert not res.skip_update
+    np.testing.assert_allclose(
+        res.advantages,
+        standardize(group_relative_advantage(rewards)),
+    )
+
+
+def test_single_sample_group_skips_collapsed_branches():
+    res = phase_adaptive_mix([1.0], k=1, alpha_t=0.5)
+    assert res.skip_update
+    assert "group" in res.skip_reason
+    assert "top-k" in res.skip_reason

@@ -31,7 +31,7 @@ def test_routes_ollama_by_client_type(monkeypatch):
     monkeypatch.setattr(llm_utils, "OllamaClient", _StubClient, raising=False)
     monkeypatch.setattr(llm_utils, "_CLIENT_CACHE", {})
     client = llm_utils.get_llm_client(
-        "qwen2.5:3b", {"llm": {"client_type": "ollama", "name": "qwen2.5:3b"}})
+        "gpt-oss-20b", {"llm": {"client_type": "ollama", "name": "gpt-oss-20b"}})
     assert isinstance(client, _StubClient)
 
 
@@ -52,6 +52,18 @@ def test_same_name_different_base_url_not_cached_together(monkeypatch):
                                                   "base_url": "http://a:8000/v1"}})
     b = llm_utils.get_llm_client("qwen", {"llm": {"client_type": "ollama", "name": "qwen",
                                                   "base_url": "http://b:8000/v1"}})
+    assert a is not b
+
+
+def test_same_name_different_client_type_not_cached_together(monkeypatch):
+    monkeypatch.setattr(llm_utils, "OPENAI_AVAILABLE", True)
+    monkeypatch.setattr(llm_utils, "OpenAIClient", _StubClient, raising=False)
+    monkeypatch.setattr(llm_utils, "OllamaClient", _StubClient, raising=False)
+    monkeypatch.setattr(llm_utils, "_CLIENT_CACHE", {})
+    a = llm_utils.get_llm_client(
+        "neutral-model", {"llm": {"client_type": "openai", "name": "neutral-model"}})
+    b = llm_utils.get_llm_client(
+        "neutral-model", {"llm": {"client_type": "ollama", "name": "neutral-model"}})
     assert a is not b
 
 

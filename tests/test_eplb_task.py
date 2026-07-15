@@ -80,6 +80,23 @@ def test_evaluate_scores_in_unit_range():
     assert 0.0 < result["speed"] <= 1.0
 
 
+def test_config_init_score_matches_seed_measurement():
+    m, seed = _eval_mod(), _seed_mod()
+    profiles = m.make_profiles(128, 8, 5, seed=0)
+    balancedness = np.mean(
+        [
+            m.balancedness(loads, seed.assign_experts(loads, 8), 8)
+            for loads in profiles
+        ]
+    )
+    measured_score = 0.5 * balancedness + 0.5
+    with open(os.path.join(_EPLB, "config", "config_1.yaml")) as f:
+        config = yaml.safe_load(f)
+    assert config["evaluation"]["init_score"] == pytest.approx(
+        measured_score, abs=5e-5
+    )
+
+
 def test_evaluate_rejects_invalid_assignment():
     m = _eval_mod()
     result = m.evaluate(lambda loads, nd: [nd] * len(loads),  # every device out of range

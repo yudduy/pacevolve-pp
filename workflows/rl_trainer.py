@@ -17,6 +17,7 @@
 import abc
 import dataclasses
 import logging
+import math
 
 import numpy as np
 
@@ -49,6 +50,7 @@ class RolloutSample:
     reward: float = 0.0
     eval_success: bool = False
     updated_idea_repo: object = None  # IdeaRepo to persist into the island's pool
+    program_text: str = ""
 
 
 @dataclasses.dataclass
@@ -212,18 +214,18 @@ class AdvisorTrainerConfig:
 
     @classmethod
     def from_config(cls, config: dict) -> "AdvisorTrainerConfig":
-        rl = config.get("rl", {})
+        rl = config.get("rl") or {}
         return cls(
             objective=rl.get("objective", "pacevolve++"),
-            n_samples=rl.get("n_samples", 8),
-            top_k=rl.get("top_k", 4),
-            total_steps=rl.get("total_steps", 1000),
-            eps_num=rl.get("eps_num", 1e-8),
-            eps_skip=rl.get("eps_skip", 1e-6),
-            entropic_gamma=rl.get("entropic_gamma", 1.0),
+            n_samples=int(rl.get("n_samples", 8)),
+            top_k=int(rl.get("top_k", 4)),
+            total_steps=int(rl.get("total_steps", 1000)),
+            eps_num=float(rl.get("eps_num", 1e-8)),
+            eps_skip=float(rl.get("eps_skip", 1e-6)),
+            entropic_gamma=float(rl.get("entropic_gamma", 1.0)),
             clip=rl_loss.ClipConfig(
-                eps_lo=rl.get("clip_eps_lo", 0.2),
-                eps_hi=rl.get("clip_eps_hi", 0.28),
+                eps_lo=float(rl.get("clip_eps_lo", 0.2)),
+                eps_hi=float(rl.get("clip_eps_hi", 0.28)),
             ),
         )
 
@@ -232,6 +234,24 @@ class AdvisorTrainer:
     def __init__(
         self, config: AdvisorTrainerConfig, backend: PolicyBackend
     ):
+        valid_objectives = {
+            "pacevolve++", "grpo", "entropic", "maxk", "none"
+        }
+        if config.objective not in valid_objectives:
+            raise ValueError(
+                f"objective must be one of {sorted(valid_objectives)}; "
+                f"got {config.objective!r}"
+            )
+        if config.objective in {"pacevolve++", "maxk"}:
+            k_eff = min(config.top_k, config.n_samples)
+            if (
+                k_eff >= 2
+                and math.comb(config.n_samples, k_eff) > 200_000
+            ):
+                raise ValueError(
+                    "direct subset enumeration exceeds 200,000 subsets; "
+                    "lower n_samples or top_k"
+                )
         self.config = config
         self.backend = backend
 
