@@ -24,9 +24,9 @@ import yaml
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Split-capable tasks that import with no file/network side effects at import
-# time (kernel_bench reads kernel files on import; gpt lacks the split prompts).
-SPLIT_TASKS = ["llmsr", "eplb", "kuairec", "multi_evolve"]
+# Shipped tasks with advisor/implementer split prompts; all import with no
+# file/network side effects.
+SPLIT_TASKS = ["eplb", "kuairec", "multi_evolve"]
 NEW_TASKS = ["eplb", "kuairec", "multi_evolve"]
 
 CORE_PROMPTS = ["construct_idea_gen_prompt", "construct_idea_select_prompt",
