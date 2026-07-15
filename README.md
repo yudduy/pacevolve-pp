@@ -1,115 +1,70 @@
-# PACEvolve: Enabling Long-Horizon Progress-Aware Consistent Evolution
+# PACEvolve++: Advisor-Model RL for Evolutionary Search
 
-## Table of Contents
-1. [About the Project](#about-the-project)
-2. [Prerequisites](#prerequisites)
-3. [Installation & Usage](#installation--usage)
-4. [Support & Contribution](#support--contribution)
-5. [License](#license)
+A replication of [PACEvolve++](https://arxiv.org/pdf/2605.07039) — advisor-model reinforcement learning for LLM-driven evolutionary program search — built on the [PACEvolve](https://arxiv.org/pdf/2601.10657) scaffold.
 
----
+PACEvolve++ adds two things to the base evolutionary loop, both implemented here:
 
-## About the Project
+- **Advisor / implementer decomposition (§3.2)** — a small, trainable *advisor* selects an idea without writing code; a stronger *implementer* writes it. The two roles can run on different models (e.g. a local small model for the advisor, a frontier model for the implementer).
+- **Search-dynamics-aware phase-adaptive RL (§3.3, Theorem 1)** — progress-normalized reward shaping (Eq. 5), phase-adaptive advantage estimators mixing group-relative and enumeration-exact SLOO branches on a linear α schedule (Eqs. 2–4), and a masked asymmetric clipped surrogate policy loss (Eq. 6), run as a rollout-barrier loop (§3.1). GRPO and entropic (TTT-Discover) baselines ship alongside for like-for-like comparison.
 
-This repo contains implementation for the [PACEvolve](https://arxiv.org/pdf/2601.10657) paper.
+## Repository layout
 
----
+- `workflows/` — the evolution engine (`run_experiment.py`, population database, prompting utilities) plus the PACEvolve++ layer: `advisor_utils.py`, `rl_rewards.py`, `advantages.py`, `rl_loss.py`, `rl_trainer.py`, and the `run_advisor_rl.py` driver.
+- `tasks/` — task definitions. `eplb` (expert-parallelism load balancing, §4.1.1) is fully runnable and GPU-free; `kuairec` and `multi_evolve` are contract-complete skeletons that need external datasets and a GPU evaluator.
+- `tests/` — the pytest suite (145 tests), including brute-force checks of the PKPO/SLOO estimators, Theorem-1 property tests, and an end-to-end smoke test of the advisor→implementer→eval→reward→train loop against a fixture task.
 
-## Prerequisites
+The runners resolve tasks dynamically via `tasks/<task_id>/`, so keep that layout when adding tasks.
 
-Before installing `PACEvolve` you need:
-
-* **Python 3.9** or later
-* We support OpenAI / Anthropic / Google Gemini APIs. You should have at least one API key available, more installation instructions can be found below.
-* **Git**
-
-The project relies on specific directory structures to locate tasks and configurations. Ensure your project root contains:
-* `workflows/` (where this script resides)
-* `tasks/` (containing task definitions and their respective environment installation requirements)
-
----
-
-## Installation & Usage
-
-### 1. Installation
-
-Clone the repository and install the required dependencies.
+## Setup
 
 ```bash
-git clone [https://github.com/MinghaoYan/PACEvolve.git](https://github.com/MinghaoYan/PACEvolve.git)
-cd auto-evo
+git clone https://github.com/yudduy/pacevolve-pp.git
+cd pacevolve-pp
 pip install -r requirements.txt
 ```
 
----
-
-### 2. Setup API Keys & Dependencies
-
-You must configure the API keys and install the necessary packages for the models you intend to use. We currently support Google Gemini, OpenAI, and Anthropic.
-
-**1. Set your API Keys**
-Export the environment variables for the providers you plan to use:
+Set API keys for whichever providers you use, and install their clients:
 
 ```bash
-# For Google Gemini
-export GOOGLE_API_KEY="your_gemini_key"
-
-# For OpenAI (GPT-4)
-export OPENAI_API_KEY="your_openai_key"
-
-# For Anthropic (Claude)
-export ANTHROPIC_API_KEY="your_anthropic_key"
-
-# Install all supported clients
+export GOOGLE_API_KEY="..."     # Gemini
+export OPENAI_API_KEY="..."     # OpenAI
+export ANTHROPIC_API_KEY="..."  # Anthropic
 pip install google-generativeai openai anthropic
 ```
 
-Each task contains a config.yaml file in the config subdirectory, you can change the backbone llm by changing the llm section in the config file.
+Local OpenAI-compatible endpoints (Ollama, vLLM) are supported via `client_type: ollama` + `base_url` in a task's config — no key needed.
 
+## Running
 
-### 3. Running Your First Experiment
-To run the evolutionary process, execute the script with a specific task_id. This assumes you have a task configuration file located at ../tasks/<task_id>/config/.
-
-```bash
-python run_experiment.py --task_id "my_task"
-```
-
-### 4. PACEvolve++ (advisor-RL)
-
-[PACEvolve++](https://arxiv.org/pdf/2605.07039) splits the LLM into a trainable *advisor* (which selects an idea) and a stronger *implementer* (which writes the code), and adds a search-dynamics-aware reinforcement-learning objective. Run it with the dedicated driver:
+Each task is configured by `tasks/<task_id>/config/config_1.yaml` (model, paths, evaluation, `rl` section). Both drivers run from `workflows/`:
 
 ```bash
 cd workflows
+
+# Base PACEvolve evolutionary loop
+python run_experiment.py --task_id eplb
+
+# PACEvolve++ advisor-RL barrier loop
 python run_advisor_rl.py --task_id eplb --backend mock --objective pacevolve++ --max_steps 2
 ```
 
-Add `advisor_llm` / `implementer_llm` sections to the task config to give the two roles different models — e.g. a small local model for the advisor (`client_type: ollama` + `base_url` pointing at a vLLM/Ollama server) and a frontier model for the implementer. The `rl` section selects the objective (`pacevolve++`, `grpo`, `entropic`, `maxk`, `none`). Run the RL layer's pytest suite from the repository root:
+Give the two roles different models by adding `advisor_llm` / `implementer_llm` sections to the task config; each overlays the base `llm` section. The `rl` section selects the objective (`pacevolve++`, `grpo`, `entropic`, `maxk`, `none`). Real torch RL training of the advisor is a documented `PolicyBackend` seam; the shipped backend is the deterministic mock.
+
+## Tests
+
+From the repository root:
 
 ```bash
-cd ..
 python3 -m venv .venv && .venv/bin/pip install numpy pytest pyyaml
 .venv/bin/pytest
 ```
 
----
+## Logs
 
-## Support & Contribution
-### Documentation
-Transcript Logs: Detailed logs of the LLM's thought process and code generation are saved to the transcripts defined in your YAML config.
-Controller Logs: Technical execution logs are saved to controller_verbose_*.log.
+LLM transcripts and controller logs are written to the paths defined in each task's YAML config (`transcript_*.txt`, `controller_verbose_*.log`).
 
-If you need help, please open an issue in the repository!
+## Credits & License
 
----
+The base evolutionary scaffold comes from [MinghaoYan/PACEvolve](https://github.com/MinghaoYan/PACEvolve) (PACEvolve paper implementation); this repository adds the PACEvolve++ advisor-RL layer and tasks on top of it. Licensed under **Apache 2.0** — see `LICENSE`.
 
-## License
-
-**Open-source project**
-
-You are free to copy, modify, and distribute `PACEvolve` with attribution under the terms of the **Apache 2.0 license**. See the `LICENSE` file for details.
-
----
-
-This is not an officially supported Google product. This project is not eligible for the [Google Open Source Software Vulnerability Rewards Program](https://bughunters.google.com/open-source-security).
-
-This project is intended for demonstration purposes only. It is not intended for use in a production environment.
+This is not an officially supported Google product. This project is not eligible for the [Google Open Source Software Vulnerability Rewards Program](https://bughunters.google.com/open-source-security). It is intended for research and demonstration purposes, not production use.
