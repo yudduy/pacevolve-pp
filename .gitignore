@@ -53,3 +53,7 @@ coverage.xml
 # Sphinx documentation
 docs/_build/
 
+# Virtualenv / pytest (PACEvolve++ dev tooling)
+.venv/
+.pytest_cache/
+

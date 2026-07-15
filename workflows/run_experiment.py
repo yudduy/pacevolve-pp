@@ -34,6 +34,10 @@ if project_root not in sys.path:
 import llm_utils, workflow_utils, program_database, task_utils, idea_select_utils
 import importlib
 
+# Module-level logger so load_configs works when imported (e.g. by
+# run_advisor_rl.py), not only when this file runs as __main__.
+logger = logging.getLogger("controller")
+
 # NOTE: LLM interactions are handled in llm_utils.py
 # and are configured via the YAML config file.
 # Ensure llm_utils.py supports different model backends

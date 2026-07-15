@@ -221,23 +221,34 @@ if ANTHROPIC_AVAILABLE:
 
 # --- Client Factory and Cache ---
 
-_CLIENT_CACHE: Dict[str, LLMClient] = {}
+_CLIENT_CACHE: Dict[tuple, LLMClient] = {}
 
 def get_llm_client(llm_name: str, config: Dict[str, Any]) -> LLMClient:
     """Singleton pattern to retrieve or create LLM clients."""
-    if llm_name in _CLIENT_CACHE:
-        return _CLIENT_CACHE[llm_name]
-
     llm_config = config.get('llm', {})
+    # Cache by (name, base_url, client_type) so two roles that share a model
+    # name don't collide when either their endpoint or client type differs.
+    cache_key = (
+        llm_name,
+        llm_config.get('base_url'),
+        llm_config.get('client_type'),
+    )
+    if cache_key in _CLIENT_CACHE:
+        return _CLIENT_CACHE[cache_key]
+
     client_type = llm_config.get('client_type', 'gemini')
     
-    # Override client_type based on model name if user just switched the name
-    if 'gpt' in llm_name or 'openai' in llm_name:
-        client_type = 'openai'
-    elif 'claude' in llm_name or 'anthropic' in llm_name:
-        client_type = 'anthropic'
-    elif 'gemini' in llm_name:
-        client_type = 'gemini'
+    # Override client_type based on model name if user just switched the name.
+    # Explicit local endpoints may serve models with arbitrary provider names.
+    if llm_config.get('client_type') != 'ollama':
+        if 'gpt' in llm_name or 'openai' in llm_name:
+            client_type = 'openai'
+        elif 'claude' in llm_name or 'anthropic' in llm_name:
+            client_type = 'anthropic'
+        elif 'gemini' in llm_name:
+            client_type = 'gemini'
+        elif 'ollama' in llm_name:
+            client_type = 'ollama'
 
     client = None
     if client_type == 'gemini' and GEMINI_AVAILABLE:
@@ -246,10 +257,14 @@ def get_llm_client(llm_name: str, config: Dict[str, Any]) -> LLMClient:
         client = OpenAIClient(llm_config)
     elif client_type == 'anthropic' and ANTHROPIC_AVAILABLE:
         client = AnthropicClient(llm_config)
+    elif client_type == 'ollama' and OPENAI_AVAILABLE:
+        # OpenAI-compatible local endpoint (e.g. Ollama or a vLLM server); the
+        # base_url is read from the llm config, enabling small-model advisors.
+        client = OllamaClient(llm_config)
     else:
         raise ValueError(f"Unsupported or missing client type: {client_type}")
 
-    _CLIENT_CACHE[llm_name] = client
+    _CLIENT_CACHE[cache_key] = client
     logger.info(f"Initialized LLM Client: {client_type} for model {llm_name}")
     return client
 
