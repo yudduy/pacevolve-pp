@@ -48,6 +48,7 @@ class RolloutSample:
     raw_score: float | None = None
     reward: float = 0.0
     eval_success: bool = False
+    updated_idea_repo: object = None  # IdeaRepo to persist into the island's pool
 
 
 @dataclasses.dataclass

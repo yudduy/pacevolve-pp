@@ -67,6 +67,14 @@ def test_nan_reward_skips():
     assert res.advantages is None
 
 
+def test_top_k_larger_than_group_does_not_crash():
+    # top_k > n must not raise (best-of-k with k>n is best-of-n).
+    R = np.array([0.0, 1.0, 2.0])
+    res = phase_adaptive_mix(R, k=8, alpha_t=1.0)
+    assert res.advantages is not None
+    np.testing.assert_allclose(res.advantages, standardize(sloo_weights(R, 3)))
+
+
 def test_mixresult_reports_alpha_and_branches():
     R = np.array([0.0, 1.0, 3.0, 6.0, 10.0])
     res = phase_adaptive_mix(R, k=2, alpha_t=0.3)

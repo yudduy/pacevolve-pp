@@ -123,6 +123,7 @@ def build_rollout_sample(
         raw_score=raw_score,
         eval_success=evaluation_completed and raw_score is not None,
         response_mask=None,
+        updated_idea_repo=idea_repo,
     )
 
 
@@ -206,6 +207,12 @@ def run_evolution(
                 idea_repo_db.scheduler.update_score(
                     sample.island_id, sample.raw_score
                 )
+                # Persist the accumulated idea repo so the pool + experiment
+                # history grow across steps (matching run_experiment.py).
+                if sample.updated_idea_repo is not None:
+                    idea_repo_db.idea_repos[sample.island_id].append(
+                        sample.updated_idea_repo
+                    )
 
         result = trainer.train_step(group)
         rewards = group.rewards()

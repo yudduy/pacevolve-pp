@@ -225,10 +225,13 @@ _CLIENT_CACHE: Dict[str, LLMClient] = {}
 
 def get_llm_client(llm_name: str, config: Dict[str, Any]) -> LLMClient:
     """Singleton pattern to retrieve or create LLM clients."""
-    if llm_name in _CLIENT_CACHE:
-        return _CLIENT_CACHE[llm_name]
-
     llm_config = config.get('llm', {})
+    # Cache by (name, base_url) so two roles that share a model name but target
+    # different endpoints (advisor vs implementer) don't collide on one client.
+    cache_key = (llm_name, llm_config.get('base_url'))
+    if cache_key in _CLIENT_CACHE:
+        return _CLIENT_CACHE[cache_key]
+
     client_type = llm_config.get('client_type', 'gemini')
     
     # Override client_type based on model name if user just switched the name
@@ -255,7 +258,7 @@ def get_llm_client(llm_name: str, config: Dict[str, Any]) -> LLMClient:
     else:
         raise ValueError(f"Unsupported or missing client type: {client_type}")
 
-    _CLIENT_CACHE[llm_name] = client
+    _CLIENT_CACHE[cache_key] = client
     logger.info(f"Initialized LLM Client: {client_type} for model {llm_name}")
     return client
 

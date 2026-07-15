@@ -193,7 +193,14 @@ def phase_adaptive_mix(
         )
 
     a_group = group_relative_advantage(rewards)
-    a_topk = sloo_weights(rewards, k)
+    # SLOO needs 2 <= k <= n; clamp an over-large k (best-of-k with k > n is
+    # best-of-n) and treat k < 2 as a collapsed top-k branch, which only skips
+    # the step when the top-k branch is actually active (alpha > 0).
+    k_eff = min(k, len(rewards))
+    if k_eff >= 2:
+        a_topk = sloo_weights(rewards, k_eff)
+    else:
+        a_topk = np.zeros_like(rewards)
     collapsed_branches = []
     if 1.0 - alpha > 0.0 and branch_std_collapsed(a_group, eps_skip):
         collapsed_branches.append("group")

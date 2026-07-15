@@ -43,6 +43,7 @@ def _config(tmp_path):
     shutil.copy(os.path.join(_FIX, "src", "fake_1.py"), src / "fake_1.py")
     config["paths"]["src_path"] = str(src)
     config["paths"]["target_file_path"] = "fake_1.py"
+    config["database"]["num_islands"] = 1  # deterministic single-island routing
     return config
 
 
@@ -127,6 +128,8 @@ def test_smoke_registers_population_before_policy_update(tmp_path, monkeypatch):
     assert order.count("register") >= 4  # step-0 candidates registered
     # the first policy update is preceded by candidate registrations (3.1 order)
     assert "register" in order[: order.index("update")]
+    # the idea pool accumulates across steps rather than resetting each step
+    assert len(idea_repo_db.idea_repos[0]) > 1
 
 
 def test_smoke_none_objective_performs_no_updates(tmp_path, monkeypatch):

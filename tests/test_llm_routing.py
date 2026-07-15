@@ -43,6 +43,18 @@ def test_routes_ollama_by_name(monkeypatch):
     assert isinstance(client, _StubClient)
 
 
+def test_same_name_different_base_url_not_cached_together(monkeypatch):
+    # Two roles sharing a model name but different endpoints must get distinct clients.
+    monkeypatch.setattr(llm_utils, "OPENAI_AVAILABLE", True)
+    monkeypatch.setattr(llm_utils, "OllamaClient", _StubClient, raising=False)
+    monkeypatch.setattr(llm_utils, "_CLIENT_CACHE", {})
+    a = llm_utils.get_llm_client("qwen", {"llm": {"client_type": "ollama", "name": "qwen",
+                                                  "base_url": "http://a:8000/v1"}})
+    b = llm_utils.get_llm_client("qwen", {"llm": {"client_type": "ollama", "name": "qwen",
+                                                  "base_url": "http://b:8000/v1"}})
+    assert a is not b
+
+
 def test_gemini_name_still_routes_gemini(monkeypatch):
     monkeypatch.setattr(llm_utils, "GEMINI_AVAILABLE", True)
     monkeypatch.setattr(llm_utils, "GeminiClient", _StubClient, raising=False)
