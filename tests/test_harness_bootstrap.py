@@ -25,7 +25,7 @@ def test_workflows_modules_import():
 
 
 def test_real_tasks_namespace_resolves():
-    importlib.import_module("tasks.llmsr.eval.eval_utils")
+    importlib.import_module("tasks.eplb.eval.eval_utils")
 
 
 def test_fake_task_merges_into_tasks_namespace():
