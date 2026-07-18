@@ -1,0 +1,166 @@
+# PACEvolve++ config for the FrontierCS rectangle-free-grid (Zarankiewicz) task.
+# Search structure runs with the mock RL trainer (black-box OpenRouter models can't
+# do Eq.6 gradient updates); the advisor->implementer decomposition, islands, idea
+# history and progress-normalized reward shaping are all live. Paths are relative to
+# the repo root; run_rfg_evolve.py resolves them to absolute (portable to FarmShare).
+
+# Base LLM config (shared params; per-role/per-island overlays override `name`).
+llm:
+  client_type: "openrouter"
+  name: "deepseek/deepseek-v3.2"     # fallback only; islands override below
+  context_size: 200000
+  max_output_tokens: 16000
+  temperature: 1.0
+  top_p: 0.95
+  safety_margin: 600
+  max_try_count: 2         # retries on a hung/failed generation (x request_timeout)
+  request_timeout: 200     # per-call seconds; hard wall-clock deadline is this + 30s
+
+advisor_llm:
+  name: "qwen/qwen3-next-80b-a3b-thinking"
+  temperature: 0.7
+  max_output_tokens: 4000
+  reasoning:
+    effort: "low"
+
+implementer_llm:
+  name: "deepseek/deepseek-v4-pro"
+  max_output_tokens: 12000
+
+# Per-island diverse frontier open-weight ensemble (run_rfg_evolve.py reads this).
+# Advisor is shared; each island's implementer is a distinct model/lineage so the
+# search explores genuinely different construction families in parallel.
+models:
+  advisor:
+    name: "qwen/qwen3-next-80b-a3b-thinking"
+    client_type: "openrouter"
+    temperature: 0.7
+    max_output_tokens: 4000
+    reasoning:
+      effort: "low"
+  islands:
+    - name: "deepseek/deepseek-v4-pro"       # algorithmic ceiling (LCB 93.5, CF 3206)
+      client_type: "openrouter"
+      temperature: 1.0
+      max_output_tokens: 12000
+      reasoning:
+        effort: "medium"                     # high was too slow for a small region
+    - name: "z-ai/glm-5.2"                    # #1 open all-around
+      client_type: "openrouter"
+      temperature: 1.0
+      max_output_tokens: 10000
+    - name: "qwen/qwen3.5-397b-a17b"          # strongest open reasoner outside DeepSeek
+      client_type: "openrouter"
+      temperature: 1.0
+      max_output_tokens: 12000
+    - name: "moonshotai/kimi-k3"              # frontier ceiling; Moonshot lineage (pricey)
+      client_type: "openrouter"
+      temperature: 1.0
+      max_output_tokens: 10000
+    - name: "deepseek/deepseek-v3.2"          # cheap CP-specialist; throughput workhorse
+      client_type: "openrouter"
+      temperature: 1.0
+      max_output_tokens: 12000
+
+rl:
+  objective: "pacevolve++"
+  advisor_flow: "propose"    # rfg prompts propose an idea (build_advisor_prompt); "select" = shipped generate/classify/select-by-id flow
+  backend: "mock"            # -> "tinker" for real advisor training (or CLI --backend tinker)
+  tinker_base_url: null      # self-hosted skyrl-tx URL (e.g. http://127.0.0.1:8000); env TINKER_BASE_URL overrides; null = managed Tinker cloud
+  advisor_model: "Qwen/Qwen3-8B"   # Tinker-hosted trainable advisor (Phase-2: openai/gpt-oss-120b)
+  lora_rank: 32
+  learning_rate: 1.0e-5      # LoRA-RL ~10x full-FT lr (Thinking Machines "LoRA Without Regret")
+  loss_fn: "importance_sampling"  # UNCLIPPED (proven, ttt-discover); "ppo" = Tinker clipped surrogate (verify in smoke)
+  advisor_max_tokens: 2048
+  advisor_temperature: 1.0
+  advisor_enable_thinking: true
+  n_samples: 4
+  top_k: 2
+  total_steps: 128          # paper horizon; 128 * n_samples = 512 candidate evals
+  eps_num: 1.0e-8
+  eps_skip: 1.0e-6
+  entropic_gamma: 1.0
+  clip_eps_lo: 0.2
+  clip_eps_hi: 0.28
+  eval_case_resampling: true   # resample eval (n,m) cases each step (same cases within a step) — anti-memorization
+  reward:
+    scale_c: 5.0
+    alpha_r: 1.0
+    y_min: 0.0               # affine reward -> advantage is the z-score of raw scores (no bottom clamp for valid candidates)
+
+experiment:
+  max_iters: 512
+  task_id: "rectangle_free_grid"
+  max_hparam_iters: 0
+  sota_algo_name: "RFG_SEED"
+  initial_baseline_id: -1
+  num_cpu_cores: 8
+
+paths:
+  data_path: "tasks/rectangle_free_grid/eval"
+  src_path: "tasks/rectangle_free_grid/src"
+  eval_path: "tasks/rectangle_free_grid/eval"
+  results_path: "tasks/rectangle_free_grid/results"
+  build_dir: "tasks/rectangle_free_grid/results/build"
+  target_file_path: "solution.cpp"
+  log_dir: "tasks/rectangle_free_grid/verbose"
+  transcript_dir: "tasks/rectangle_free_grid/transcripts"
+  frontier_solution: "rectangle-free-grid/algorithmic/problems/27/solution.cpp"
+
+compilation:
+  cxx: ""                   # empty -> eval_rfg.py auto-detects g++/clang++
+  python_bin: "python3"     # run_rfg_evolve.py overrides to its own interpreter
+  recompile_timeout: 120
+  recompile_max_retries: 2
+  edit_start_tag: "RegexTagEvolveStart"
+  edit_end_tag: "RegexTagEvolveEnd"
+
+evaluation:
+  metric_direction: "max"
+  init_score: 0.601202      # measured seed mean over the 19-case set
+  target_score: 0.667       # hard per-case ceiling (k <= 1.5*U clamp)
+  time_limit: 1.0           # per-case wall-clock (matches judge)
+  eval_timeout: 180
+  eval_max_retries: 1
+  eval_script_name: "eval_rfg.py"
+  max_parallel_evals: 1
+  eval_configs:
+    - dataset: "mixed"
+
+database:
+  num_islands: 5            # one per implementer model
+  tournament_size: 2
+  top_k: 4
+  max_queue_size: 200
+
+run:
+  max_workers: 20           # concurrent candidate slots (each checks out an isolated copy)
+  checkpoint_every: 10      # write champion + wandb summary every N candidates
+  seed: 0
+
+wandb:
+  enabled: true
+  project: "pacevolve-rfg"
+  entity: "kduynguy-stanford-university"
+  run_name: "rfg-max-frontier-5island"
+
+# Bounded to cap LLM round-trips per candidate (throughput/cost): implementer emits
+# code -> at most 1 compile-fix retry; eval almost always succeeds (sanitizer
+# guarantees valid output), so no eval-repair cascade.
+workflow_loops:
+  initial_compile:
+    max_attempts: 2
+    loop_tag: "initial_compile_loop"
+    summary_tag: "initial_compile_summary"
+  initial_eval:
+    max_attempts: 1
+    max_compile_attempts: 2
+    loop_tag: "initial_eval_loop"
+    summary_tag: "initial_eval_summary"
+    compile_loop_tag: "compile_within_eval_loop"
+    compile_summary_tag: "compile_summary"
+
+summarization:
+  context_lines_after_error: 3
+  max_lines_fallback: 40
+  max_summary_lines: 60

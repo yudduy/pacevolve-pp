@@ -24,6 +24,14 @@ from typing import Any, Dict, Union
 # --- Logger Setup ---
 logger = logging.getLogger("controller")
 
+# Shared pool for hard-timeouting LLM calls. OpenRouter can trickle keepalive bytes
+# that reset httpx's read-timeout, so the SDK-level timeout may never fire on a slow
+# reasoning generation. We run each call here and enforce a wall-clock deadline via
+# future.result(timeout=...). Sized well above the driver's worker count so a few
+# leaked (timed-out but still-running) calls don't starve the pool.
+import concurrent.futures as _futures
+_LLM_EXECUTOR = _futures.ThreadPoolExecutor(max_workers=96, thread_name_prefix="llmcall")
+
 @dataclasses.dataclass
 class ContentChunk:
     content: str
@@ -186,6 +194,64 @@ if OPENAI_AVAILABLE:
             )
             return response.choices[0].message.content or ""
 
+
+    class OpenRouterClient(LLMClient):
+        """Frontier open-weight models via OpenRouter's OpenAI-compatible API.
+
+        Reads the key from `api_key` in the llm config or the OPENROUTER_API_KEY
+        env var; base URL from `base_url`/OPENROUTER_BASE_URL. OpenRouter returns
+        any chain-of-thought in `message.reasoning` and the final answer in
+        `message.content`, so returning `.content` gives the clean fenced code
+        block / Idea-ID line the pipeline parses (reasoning is stripped for free).
+        """
+
+        def __init__(self, config: Dict[str, Any]):
+            super().__init__(config)
+            self.model_name = self.config.get("name")
+            base_url = self.config.get("base_url") or os.environ.get(
+                "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+            )
+            api_key = self.config.get("api_key") or os.environ.get(
+                "OPENROUTER_API_KEY"
+            )
+            if not api_key:
+                logger.warning("OPENROUTER_API_KEY not found in environment.")
+            # Per-request timeout so a slow/hung reasoning generation fails fast
+            # instead of stalling a worker; the caller's retry loop then moves on.
+            self.timeout = float(self.config.get("request_timeout", 240))
+            self.client = OpenAI(
+                base_url=base_url, api_key=api_key,
+                timeout=self.timeout, max_retries=1,
+            )
+            # Optional provider-agnostic reasoning control, e.g. {"effort": "low"}
+            # or {"max_tokens": 4000}. Passed through OpenRouter's `reasoning` field.
+            self.reasoning = self.config.get("reasoning")
+            self.extra_headers = {
+                "HTTP-Referer": self.config.get(
+                    "referer", "https://github.com/yudduy/pacevolve-pp"
+                ),
+                "X-Title": self.config.get("title", "PACEvolve++ RFG"),
+            }
+
+        def count_tokens(self, text: str) -> int:
+            # OpenRouter model names aren't in tiktoken's registry; approximate
+            # at ~4 chars/token (same convention as OllamaClient).
+            return max(1, len(text) // 4)
+
+        def generate(self, prompt: str, generation_config: Dict[str, Any]) -> str:
+            params = {
+                "model": self.model_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": generation_config.get("temperature", 1.0),
+                "top_p": generation_config.get("top_p", 0.95),
+                "max_tokens": generation_config.get("max_output_tokens", 8192),
+                "extra_headers": self.extra_headers,
+            }
+            if self.reasoning is not None:
+                params["extra_body"] = {"reasoning": self.reasoning}
+            response = self.client.chat.completions.create(**params)
+            return response.choices[0].message.content or ""
+
 # --- Anthropic Client ---
 try:
     import anthropic
@@ -240,7 +306,7 @@ def get_llm_client(llm_name: str, config: Dict[str, Any]) -> LLMClient:
     
     # Override client_type based on model name if user just switched the name.
     # Explicit local endpoints may serve models with arbitrary provider names.
-    if llm_config.get('client_type') != 'ollama':
+    if llm_config.get('client_type') not in ('ollama', 'openrouter'):
         if 'gpt' in llm_name or 'openai' in llm_name:
             client_type = 'openai'
         elif 'claude' in llm_name or 'anthropic' in llm_name:
@@ -261,6 +327,9 @@ def get_llm_client(llm_name: str, config: Dict[str, Any]) -> LLMClient:
         # OpenAI-compatible local endpoint (e.g. Ollama or a vLLM server); the
         # base_url is read from the llm config, enabling small-model advisors.
         client = OllamaClient(llm_config)
+    elif client_type == 'openrouter' and OPENAI_AVAILABLE:
+        # Frontier open-weight models via OpenRouter's OpenAI-compatible API.
+        client = OpenRouterClient(llm_config)
     else:
         raise ValueError(f"Unsupported or missing client type: {client_type}")
 
@@ -310,14 +379,25 @@ def generate_completion(
         "max_output_tokens": llm_config.get("max_output_tokens", 4096)
     }
 
-    # 5. Execution with Retry
+    # 5. Execution with Retry + hard wall-clock timeout per call
     max_tries = llm_config.get('max_try_count', 3)
+    hard_timeout = float(llm_config.get('request_timeout', 240)) + 30
     output_text = None
 
     for i in range(max_tries):
         try:
-            output_text = llm_client.generate(final_prompt, generation_config)
+            fut = _LLM_EXECUTOR.submit(
+                llm_client.generate, final_prompt, generation_config
+            )
+            output_text = fut.result(timeout=hard_timeout)
             break
+        except _futures.TimeoutError:
+            logger.error(
+                f"LLM generate hard-timeout ({hard_timeout:.0f}s) on try "
+                f"{i + 1}/{max_tries}"
+            )
+            if i == max_tries - 1:
+                return None
         except Exception as e:
             logger.error(f"LLM generate call failed on try {i + 1}/{max_tries}: {e}")
             if i == max_tries - 1:

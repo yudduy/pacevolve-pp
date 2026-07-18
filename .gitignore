@@ -57,3 +57,19 @@ docs/_build/
 .venv/
 .pytest_cache/
 
+# Secrets — API keys must never be committed
+.env
+.env.*
+!.env.example
+
+# Cloned FrontierCS benchmark (has its own git repo + trace hooks)
+/rectangle-free-grid/
+
+# Run artifacts
+wandb/
+workflows/tasks/
+tasks/*/results/
+tasks/*/transcripts/
+tasks/*/verbose/
+tasks/*/config/config_9.yaml   # generated smoke config (scripts/farmshare_skyrl_smoke.sh)
+
