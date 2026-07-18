@@ -198,3 +198,35 @@ def test_resolve_base_url_blank_values_fall_through(monkeypatch):
     assert tinker_backend._resolve_base_url(
         {"tinker_base_url": "http://cfg:8"}
     ) == "http://cfg:8"
+
+
+class _StubTok:
+    """apply_chat_template return-shape stub (transformers version drift)."""
+
+    def __init__(self, ret):
+        self._ret = ret
+
+    def apply_chat_template(self, *a, **k):
+        return self._ret
+
+
+def _render_with(ret):
+    backend = tinker_backend.TinkerPolicyBackend.__new__(
+        tinker_backend.TinkerPolicyBackend
+    )
+    backend._hf_tok = _StubTok(ret)
+    backend.enable_thinking = True
+    return backend._render_ids("hi")
+
+
+def test_render_ids_plain_list():
+    assert _render_with([6, 7]) == [6, 7]
+
+
+def test_render_ids_dict_return():
+    # BatchEncoding-style: iterating yields keys -> int('input_ids') crashed.
+    assert _render_with({"input_ids": [1, 2, 3]}) == [1, 2, 3]
+
+
+def test_render_ids_batched_return():
+    assert _render_with([[4, 5]]) == [4, 5]

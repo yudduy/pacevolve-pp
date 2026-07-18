@@ -179,6 +179,12 @@ class TinkerPolicyBackend(rl_trainer.PolicyBackend):
             tokenize=True,
             enable_thinking=self.enable_thinking,
         )
+        # transformers version drift: apply_chat_template may return a list[int],
+        # a BatchEncoding/dict ({"input_ids": [...]}), or a batched [[...]].
+        if isinstance(ids, dict) or hasattr(ids, "keys"):
+            ids = ids["input_ids"]
+        if ids and isinstance(ids[0], (list, tuple)):
+            ids = ids[0]
         return [int(t) for t in ids]
 
     def _model_input(self, ids):
