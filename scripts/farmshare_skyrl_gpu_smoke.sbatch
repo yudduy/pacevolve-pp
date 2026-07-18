@@ -3,7 +3,9 @@
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=48G
+#SBATCH --mem=96G
+# (CPU-tier smoke at 32G OOM-killed during JAX forward_backward on a 0.6B model —
+#  host RAM for JAX staging + driver + eval subprocesses needs headroom)
 #SBATCH --time=4:00:00
 #SBATCH --output=/scratch/users/duynguy/logs/skyrl-smoke-%j.out
 #
