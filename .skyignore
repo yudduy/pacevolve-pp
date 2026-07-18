@@ -1,0 +1,6 @@
+# Never sync these to cloud instances (sky workdir sync).
+.env
+.venv
+.git
+tasks/*/results
+rectangle-free-grid

@@ -1,0 +1,62 @@
+# SkyPilot spec: rented-GPU real run of PACEvolve++ advisor RL against a
+# self-hosted skyrl-tx (Tinker-API) server on the same box.
+#
+# LAUNCH IS USER-GATED (spends money). Use scripts/sky_launch_real_run.sh.
+# Secrets are injected at launch time via --env / --env-file; never committed.
+#
+#   sky launch -c rfg-tinker scripts/skypilot_rfg_tinker.yaml \
+#       --env OPENROUTER_API_KEY --env WANDB_API_KEY --env HF_TOKEN
+name: pacevolve-rfg-tinker
+
+resources:
+  accelerators: {H100: 1, A100-80GB: 1}   # any-of; SkyPilot picks cheapest available
+  disk_size: 200
+  # on-demand (no spot): v1 accepts restart-on-failure, not preemption roulette
+
+workdir: .   # the pacevolve-pp repo; .env is gitignored — keep it out (see .skyignore)
+
+envs:
+  TINKER_BASE_URL: http://127.0.0.1:8000
+  TINKER_API_KEY: tml-dummy          # self-hosted server: dummy auth
+  ADVISOR_MODEL: Qwen/Qwen3-8B
+  SKYRL_COMMIT: fdfcb435235ce6564e43af5e83bd85bb1f6af032
+  # Injected at launch (values never committed):
+  OPENROUTER_API_KEY: null
+  WANDB_API_KEY: null
+  HF_TOKEN: null
+
+setup: |
+  set -e
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+  # skyrl-tx server env
+  if [ ! -d ~/skyrl/.git ]; then git clone https://github.com/NovaSky-AI/SkyRL ~/skyrl; fi
+  git -C ~/skyrl checkout "$SKYRL_COMMIT"
+  cd ~/skyrl && uv venv --python 3.12 --allow-existing && uv sync --extra tinker --extra jax --extra gpu
+  # driver env (separate venv; requirements from the synced workdir)
+  cd ~/sky_workdir
+  uv venv --python 3.12 ~/ppvenv
+  uv pip install --python ~/ppvenv/bin/python -r requirements.txt tinker transformers openai jiter
+  # prefetch model weights
+  cd ~/skyrl && uv run --extra tinker --extra jax --extra gpu python -c \
+    "from huggingface_hub import snapshot_download; snapshot_download('$ADVISOR_MODEL')"
+
+run: |
+  set -e
+  export PATH="$HOME/.local/bin:$PATH"
+  cd ~/skyrl
+  nohup uv run --extra tinker --extra jax --extra gpu -m skyrl.tinker.api \
+    --base-model "$ADVISOR_MODEL" --port 8000 > ~/server.log 2>&1 &
+  echo $! > ~/server.pid
+  # health poll (JAX warmup + 8B load can take a while)
+  DEADLINE=$((SECONDS + 1800))
+  until curl -sf http://127.0.0.1:8000/docs >/dev/null 2>&1 \
+     || curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1; do
+    [ $SECONDS -ge $DEADLINE ] && { echo "server never came up"; tail -50 ~/server.log; exit 1; }
+    kill -0 "$(cat ~/server.pid)" || { echo "server died"; tail -50 ~/server.log; exit 1; }
+    sleep 10
+  done
+  echo "skyrl-tx up after ${SECONDS}s"
+  cd ~/sky_workdir
+  # total_steps / n_samples come from tasks/rectangle_free_grid/config/config_1.yaml
+  ~/ppvenv/bin/python -u workflows/run_advisor_rl.py -t rectangle_free_grid --backend tinker
