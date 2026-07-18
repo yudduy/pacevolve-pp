@@ -33,6 +33,9 @@ set -a
 set +a
 export TINKER_BASE_URL="http://127.0.0.1:$PORT"
 export TINKER_API_KEY="tml-dummy"                    # self-hosted server accepts dummy auth
+# skyrl-tx futures DB defaults to a SQLite file inside the repo = NFS scratch;
+# SQLite on NFS throws intermittent "disk I/O error". Keep it node-local.
+export SKYRL_DATABASE_URL="sqlite:////tmp/skyrl-tinker-${SLURM_JOB_ID:-manual}.db"
 export HF_HOME="$SCRATCH/hf-cache"
 export UV_CACHE_DIR="$SCRATCH/uv-cache"
 export XDG_CACHE_HOME="$SCRATCH/.cache"
