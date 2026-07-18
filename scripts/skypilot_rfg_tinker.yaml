@@ -9,7 +9,9 @@
 name: pacevolve-rfg-tinker
 
 resources:
-  accelerators: {H100: 1, A100-80GB: 1}   # any-of; SkyPilot picks cheapest available
+  # 48GB-class first: Qwen3-8B + LoRA r32 fits, and the GPU idles during
+  # implement/eval, so H100 throughput buys ~nothing. Verify names: `sky show-gpus`.
+  accelerators: {L40S: 1, RTXA6000: 1, A100-80GB: 1, H100: 1}   # any-of, cheapest wins
   disk_size: 200
   # on-demand (no spot): v1 accepts restart-on-failure, not preemption roulette
 
