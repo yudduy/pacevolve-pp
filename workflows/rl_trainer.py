@@ -34,6 +34,7 @@ class GenerationResult:
     text: str
     token_ids: np.ndarray | None = None
     logprobs: np.ndarray | None = None
+    prompt_token_ids: np.ndarray | None = None
 
 
 @dataclasses.dataclass
@@ -43,6 +44,7 @@ class RolloutSample:
     response_text: str = ""
     token_ids: np.ndarray | None = None
     old_logprobs: np.ndarray | None = None
+    prompt_token_ids: np.ndarray | None = None
     response_mask: np.ndarray | None = None
     idea_id: int = -1
     exp_description: str = ""

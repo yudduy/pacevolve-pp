@@ -22,6 +22,8 @@ import os
 import sys
 import time
 
+import numpy as np
+
 
 current_script_path = os.path.abspath(__file__)
 workflows_dir = os.path.dirname(current_script_path)
@@ -40,6 +42,68 @@ import run_experiment
 
 logger = logging.getLogger("controller")
 
+_PATH_SKIP = {"target_file_path"}
+_RUNTIME_DIRS = ("results_path", "build_dir", "log_dir", "transcript_dir")
+
+
+def _resolve_config_paths(config, compile_config):
+    """Resolve filesystem paths independently of the caller's working directory."""
+    paths = config["paths"]
+    for key, value in paths.items():
+        if key in _PATH_SKIP or not isinstance(value, str) or not value:
+            continue
+        value = os.path.expanduser(value)
+        if not os.path.isabs(value):
+            value = os.path.join(project_root, value)
+        paths[key] = value
+
+    if compile_config is not None:
+        target_file_path = paths["target_file_path"]
+        if not os.path.isabs(target_file_path):
+            target_file_path = os.path.join(paths["src_path"], target_file_path)
+        compile_config.target_file_path = target_file_path
+
+    for key in _RUNTIME_DIRS:
+        if paths.get(key):
+            os.makedirs(paths[key], exist_ok=True)
+
+
+def _clean_text(text):
+    """Match generate_completion's post-processing so a captured generation's
+    text can be compared against the returned response."""
+    if text is None:
+        return None
+    return text.replace("<end_of_turn>", "").replace("<start_of_turn>", "").strip()
+
+
+def _capture_advisor_tokens(advisor, expected_text):
+    """Return (token_ids, old_logprobs, prompt_token_ids) for the advisor's last
+    generation, or (None, None, None).
+
+    With the Tinker backend the sampled tokens arrive via backend.last_generation
+    (a side channel, since the LLMClient contract returns only text). A
+    name-string advisor has no `.backend`, so this is a no-op and the
+    mock/baseline paths are unchanged. When `expected_text` is the returned
+    response, only accept the capture if it matches — this rejects a stale or
+    leaked (timed-out, still-running) generation that would otherwise mis-pair
+    tokens with the wrong sample's reward.
+    """
+    backend = getattr(advisor, "backend", None)
+    gen = getattr(backend, "last_generation", None) if backend is not None else None
+    if gen is None or gen.token_ids is None:
+        return None, None, None
+    if expected_text is not None and _clean_text(gen.text) != _clean_text(expected_text):
+        return None, None, None
+    return gen.token_ids, gen.logprobs, gen.prompt_token_ids
+
+
+def _reset_advisor_capture(advisor):
+    """Clear the capture slot so a prior sample's tokens can't be read for this
+    one if this sample's advisor call produces nothing usable."""
+    backend = getattr(advisor, "backend", None)
+    if backend is not None:
+        backend.last_generation = None
+
 
 def build_rollout_sample(
     step,
@@ -56,6 +120,7 @@ def build_rollout_sample(
     reward_cfg,
 ) -> rl_trainer.RolloutSample:
     """Build and evaluate one advisor rollout sample."""
+    _reset_advisor_capture(advisor)
     parent, island_id = db.get_candidate()
     if idea_repo_db.idea_repos[island_id]:
         idea_repo = deepcopy(idea_repo_db.idea_repos[island_id][-1])
@@ -64,34 +129,74 @@ def build_rollout_sample(
     idea_repo.sota = parent
 
     transcript = llm_utils.Transcript(log_filename=args._transcript_file)
-    if args.use_idea_repo:
-        idea_select_utils.scratch_pad(
-            idea_repo,
+    advisor_flow = (config.get("rl") or {}).get("advisor_flow", "select")
+
+    if advisor_flow == "propose":
+        # Direct propose flow: a single advisor generation (build_advisor_prompt)
+        # IS the trained action. Matches tasks whose prompts propose an idea
+        # rather than select one by id, and gives RL a clean single-turn action.
+        prompt = prompts.construct_idea_gen_prompt(parent, idea_repo)
+        transcript.append(
+            llm_utils.ContentChunk(prompt, "user", tags=["idea_propose_prompt"])
+        )
+        raw = llm_utils.generate_completion(
+            advisor, transcript, advisor_utils.make_role_config(config, "advisor")
+        )
+        if not raw:
+            return rl_trainer.RolloutSample(
+                island_id=island_id,
+                prompt_text=prompt or "",
+                response_text="",
+                idea_id=-1,
+                exp_description="",
+                raw_score=None,
+                eval_success=False,
+                response_mask=None,
+            )
+        transcript.append(
+            llm_utils.ContentChunk(raw, "model", tags=["idea_propose_response"])
+        )
+        # The proposal text IS the experiment description handed to the
+        # implementer; idea_id is unused by the propose-style prompts.
+        idea_id, exp_desc = 0, raw
+        token_ids, old_logprobs, prompt_token_ids = _capture_advisor_tokens(advisor, raw)
+    else:
+        if args.use_idea_repo:
+            idea_select_utils.scratch_pad(
+                idea_repo,
+                advisor,
+                transcript,
+                advisor_utils.make_role_config(config, "advisor"),
+                prompts.construct_idea_gen_prompt(parent, idea_repo),
+            )
+
+        idea_id, exp_desc, raw, prompt = advisor_utils.select_idea_no_code(
             advisor,
             transcript,
+            prompts,
+            parent,
+            idea_repo,
             advisor_utils.make_role_config(config, "advisor"),
-            prompts.construct_idea_gen_prompt(parent, idea_repo),
         )
+        if (idea_id, exp_desc, raw) == (None, None, None):
+            # Parse failure: leave tokens uncaptured. run_evolution computes
+            # advantages over only the captured (trainable) samples, so this
+            # sample does not skew the group baseline; it still counts for logging.
+            return rl_trainer.RolloutSample(
+                island_id=island_id,
+                prompt_text=prompt or "",
+                response_text="",
+                idea_id=idea_id or -1,
+                exp_description=exp_desc or "",
+                raw_score=None,
+                eval_success=False,
+                response_mask=None,
+            )
 
-    idea_id, exp_desc, raw, prompt = advisor_utils.select_idea_no_code(
-        advisor,
-        transcript,
-        prompts,
-        parent,
-        idea_repo,
-        advisor_utils.make_role_config(config, "advisor"),
-    )
-    if (idea_id, exp_desc, raw) == (None, None, None):
-        return rl_trainer.RolloutSample(
-            island_id=island_id,
-            prompt_text=prompt or "",
-            response_text="",
-            idea_id=idea_id or -1,
-            exp_description=exp_desc or "",
-            raw_score=None,
-            eval_success=False,
-            response_mask=None,
-        )
+        # Snapshot the winning generation NOW, before the long implement_idea
+        # phase, correlated against `raw` so we never train tokens that didn't
+        # produce the scored idea.
+        token_ids, old_logprobs, prompt_token_ids = _capture_advisor_tokens(advisor, raw)
 
     trial = advisor_utils.implement_idea(
         implementer,
@@ -118,11 +223,18 @@ def build_rollout_sample(
         island_id=island_id,
         prompt_text=prompt or "",
         response_text=raw or "",
+        token_ids=token_ids,
+        old_logprobs=old_logprobs,
+        prompt_token_ids=prompt_token_ids,
+        response_mask=(
+            np.ones(len(token_ids), dtype=float)
+            if token_ids is not None
+            else None
+        ),
         idea_id=idea_id or -1,
         exp_description=exp_desc or "",
         raw_score=raw_score,
         eval_success=evaluation_completed and raw_score is not None,
-        response_mask=None,
         updated_idea_repo=idea_repo,
         program_text=trial.algorithm_implementation,
     )
@@ -181,6 +293,10 @@ def run_evolution(
 ) -> None:
     """Run rollout barriers with population updates before policy updates."""
     for step in range(args.max_steps):
+        rl_cfg = config.get("rl") or {}
+        if bool(rl_cfg.get("eval_case_resampling", False)):
+            base_seed = int((config.get("run") or {}).get("seed", 0))
+            os.environ["PACE_EVAL_CASE_SEED"] = str(base_seed * 1_000_003 + step)
         group = build_rollout_group(
             step,
             config,
@@ -260,7 +376,18 @@ def run_evolution(
 
             idea_repo_db.idea_repos[island_id].append(base)
 
-        result = trainer.train_step(group)
+        # Advantages are computed inside train_step over the group's rewards;
+        # restrict to samples we can actually train (captured tokens) so
+        # parse-failures / uncorrelated captures don't skew the baseline. The
+        # full group still drove the population updates above and the reward
+        # logging below. Mock/baseline backends never set token_ids, so this
+        # falls back to the full group and their behavior is unchanged.
+        trainable = [s for s in group.samples if s.token_ids is not None]
+        result = trainer.train_step(
+            rl_trainer.RolloutGroup(step=step, samples=trainable)
+            if trainable
+            else group
+        )
         rewards = group.rewards()
         mean_reward = float(rewards.mean()) if len(rewards) else float("nan")
         max_reward = float(rewards.max()) if len(rewards) else float("nan")
@@ -290,7 +417,7 @@ def main() -> None:
         default=None,
     )
     parser.add_argument(
-        "--backend", choices=("mock", "torch"), default=None
+        "--backend", choices=("mock", "torch", "tinker"), default=None
     )
     parser.add_argument("--n_samples", type=int, default=None)
     parser.add_argument("--max_steps", type=int, default=None)
@@ -301,13 +428,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    CONFIG_PATH = os.path.abspath(
-        f"../tasks/{args.task_id}/config/{args.dataset_id}/"
-        f"config_{args.run_id}.yaml"
+    config_path = os.path.join(
+        project_root,
+        "tasks",
+        args.task_id,
+        "config",
+        args.dataset_id,
+        f"config_{args.run_id}.yaml",
     )
     config, compile_config, eval_configs, _ = run_experiment.load_configs(
-        CONFIG_PATH
+        config_path
     )
+    _resolve_config_paths(config, compile_config)
 
     trainer_config = rl_trainer.AdvisorTrainerConfig.from_config(config)
     rl_config = config.get("rl") or {}
@@ -398,16 +530,26 @@ def main() -> None:
     trainer_config.objective = args.objective
     trainer_config.total_steps = args.max_steps
     trainer_config.n_samples = args.n_samples
-    if args.backend == "torch":
-        logger.warning(
-            "Torch is unavailable; falling back to the mock backend."
+    if args.backend == "tinker":
+        import tinker_backend
+
+        backend = tinker_backend.TinkerPolicyBackend(config)
+        # The advisor becomes the TRAINED Tinker model; generate_completion
+        # accepts a client, so pass the backend-backed client directly.
+        advisor = rl_trainer.BackendLLMClient(
+            backend, advisor_utils.make_role_config(config, "advisor")
         )
-    backend = rl_trainer.MockPolicyBackend(config)
+    else:
+        if args.backend == "torch":
+            logger.warning(
+                "Torch is unavailable; falling back to the mock backend."
+            )
+        backend = rl_trainer.MockPolicyBackend(config)
+        advisor = advisor_utils.make_role_config(config, "advisor")["llm"][
+            "name"
+        ]
     trainer = rl_trainer.AdvisorTrainer(trainer_config, backend)
 
-    advisor = advisor_utils.make_role_config(config, "advisor")["llm"][
-        "name"
-    ]
     implementer = advisor_utils.make_role_config(config, "implementer")[
         "llm"
     ]["name"]

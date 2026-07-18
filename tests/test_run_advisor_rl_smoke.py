@@ -244,6 +244,37 @@ def test_main_rejects_invalid_objective(monkeypatch, capsys):
     assert "invalid choice" in capsys.readouterr().err
 
 
+def test_resolve_config_paths_anchors_relative_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_advisor_rl, "project_root", str(tmp_path))
+    relative_paths = {
+        "data_path": "tasks/fake/data",
+        "src_path": "tasks/fake/src",
+        "eval_path": "tasks/fake/eval",
+        "results_path": "tasks/fake/results",
+        "build_dir": "tasks/fake/results/build",
+        "log_dir": "tasks/fake/logs",
+        "transcript_dir": "tasks/fake/transcripts",
+        "frontier_solution": "external/solution.cpp",
+    }
+    config = {
+        "paths": {**relative_paths, "target_file_path": "solution.cpp"}
+    }
+    compile_config = task_utils.CompilationConfig(
+        target_file_path="tasks/fake/src/solution.cpp"
+    )
+
+    run_advisor_rl._resolve_config_paths(config, compile_config)
+
+    for key, value in relative_paths.items():
+        assert config["paths"][key] == os.path.join(tmp_path, value)
+    assert config["paths"]["target_file_path"] == "solution.cpp"
+    assert compile_config.target_file_path == os.path.join(
+        tmp_path, "tasks/fake/src/solution.cpp"
+    )
+    for key in ("results_path", "build_dir", "log_dir", "transcript_dir"):
+        assert os.path.isdir(config["paths"][key])
+
+
 def test_main_rejects_unimplemented_torch_backend(
     tmp_path, monkeypatch, capsys
 ):
@@ -269,10 +300,14 @@ def test_main_accepts_none_rl_section(tmp_path, monkeypatch):
     config["rl"] = None
     config["paths"]["log_dir"] = str(tmp_path / "logs")
     config["paths"]["transcript_dir"] = str(tmp_path / "transcripts")
+    loaded_paths = []
+
+    def fake_load_configs(path):
+        loaded_paths.append(path)
+        return config, None, [], None
+
     monkeypatch.setattr(
-        run_advisor_rl.run_experiment,
-        "load_configs",
-        lambda path: (config, None, [], None),
+        run_advisor_rl.run_experiment, "load_configs", fake_load_configs
     )
     called = []
     monkeypatch.setattr(
@@ -285,7 +320,11 @@ def test_main_accepts_none_rl_section(tmp_path, monkeypatch):
         "argv",
         ["run_advisor_rl.py", "--task_id", "fake_task", "--max_steps", "0"],
     )
+    monkeypatch.chdir(tmp_path)
 
     run_advisor_rl.main()
 
     assert called == [True]
+    assert os.path.normpath(loaded_paths[0]) == os.path.join(
+        _REPO, "tasks", "fake_task", "config", "config_1.yaml"
+    )

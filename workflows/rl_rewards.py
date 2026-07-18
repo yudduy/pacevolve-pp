@@ -45,16 +45,22 @@ class RewardShapingConfig:
             raise ValueError("metric_direction must be 'max' or 'min'")
         if not self.y_min < self.y_max:
             raise ValueError("y_min must be less than y_max")
+        if self.alpha_r <= 0:
+            raise ValueError("alpha_r must be > 0 (0 ** 0 would invert the floor)")
 
     @classmethod
     def from_config(cls, config: dict) -> "RewardShapingConfig":
         """Build reward settings from an experiment configuration."""
         evaluation = config["evaluation"]
         reward = (config.get("rl") or {}).get("reward") or {}
+        y_min = reward.get("y_min")
+        y_max = reward.get("y_max")
         return cls(
             metric_direction=evaluation["metric_direction"],
             y_init=float(evaluation["init_score"]),
             y_target=float(evaluation["target_score"]),
+            y_min=float(y_min) if y_min is not None else None,
+            y_max=float(y_max) if y_max is not None else None,
             scale_c=float(reward.get("scale_c", 5.0)),
             alpha_r=float(reward.get("alpha_r", 1.0)),
         )
