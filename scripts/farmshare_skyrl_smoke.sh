@@ -51,6 +51,12 @@ if [ "$GPU" = 1 ]; then
   EXTRAS+=(--extra gpu)
   echo "=== GPU preflight ==="
   nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv || { echo "no GPU visible"; exit 1; }
+  # MEASURED: without caps, the train JIT (batch-4 x long seq) requests ~9.6GiB it
+  # can't get next to JAX's preallocated sampling pool -> RESOURCE_EXHAUSTED loop.
+  export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.70}"
+  if [ -z "${SKYRL_BACKEND_CONFIG:-}" ]; then
+    export SKYRL_BACKEND_CONFIG='{"train_micro_batch_size": 1, "sample_max_num_sequences": 4}'
+  fi
 fi
 
 RUNTAG="$(date -u +%Y%m%dT%H%M%SZ)"
