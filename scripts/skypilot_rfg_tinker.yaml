@@ -9,9 +9,11 @@
 name: pacevolve-rfg-tinker
 
 resources:
-  # 48GB-class first: Qwen3-8B + LoRA r32 fits, and the GPU idles during
-  # implement/eval, so H100 throughput buys ~nothing. Verify names: `sky show-gpus`.
-  accelerators: {L40S: 1, RTXA6000: 1, A100-80GB: 1, H100: 1}   # any-of, cheapest wins
+  # 48GB-class first: Qwen3-8B + LoRA r32 fits (with JAX memtuning), and the GPU
+  # idles during implement/eval, so H100 throughput buys ~nothing.
+  # RunPod secure prices 2026-07: A40 $0.44, RTXA6000 $0.49, RTX6000-Ada $0.77,
+  # L40S $0.99, A100-80GB $1.39, H100 $2.89. If 8B needs >48GB, drop to the A100 line.
+  accelerators: {A40: 1, RTXA6000: 1, RTX6000-Ada: 1, L40S: 1, A100-80GB: 1}  # any-of, cheapest wins
   disk_size: 200
   # on-demand (no spot): v1 accepts restart-on-failure, not preemption roulette
 
