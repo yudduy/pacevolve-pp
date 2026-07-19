@@ -24,7 +24,7 @@ advisor_llm:
     effort: "low"
 
 implementer_llm:
-  name: "deepseek/deepseek-v4-pro"
+  name: "google/gemini-3.1-pro-preview"  # paper's executor (~$62/512-cand run); axes: deepseek/deepseek-v4-flash (cheap), moonshotai/kimi-k3
   max_output_tokens: 12000
 
 # Per-island diverse frontier open-weight ensemble (run_rfg_evolve.py reads this).

@@ -56,13 +56,22 @@ RUNTAG="$(date -u +%Y%m%dT%H%M%SZ)"
 SERVER_LOG="$SCRATCH/logs/skyrl-server-$RUNTAG.log"
 PIDFILE="$SCRATCH/logs/skyrl-server-$RUNTAG.pid"
 
+GPULOG="$SCRATCH/logs/gpu-util-$RUNTAG.log"
 cleanup() {
   if [ -f "$PIDFILE" ]; then
     kill "$(cat "$PIDFILE")" 2>/dev/null || true
     rm -f "$PIDFILE"
   fi
+  [ -n "${DMON_PID:-}" ] && kill "$DMON_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# GPU utilization evidence (sm%/mem% every 30s) — verify, don't assume.
+if [ "$GPU" = 1 ]; then
+  nohup nvidia-smi dmon -s um -d 30 -o T > "$GPULOG" 2>&1 &
+  DMON_PID=$!
+  echo "gpu utilization log: $GPULOG"
+fi
 
 echo "=== launch skyrl-tx server: $MODEL (gpu=$GPU) -> $SERVER_LOG ==="
 cd "$SKYRL_DIR"
@@ -104,6 +113,8 @@ dst = "tasks/rectangle_free_grid/config/config_9.yaml"
 with open(src) as f:
     cfg = yaml.safe_load(f)
 cfg["rl"]["advisor_model"] = os.environ["MODEL"]
+if os.environ.get("SMOKE_IMPLEMENTER"):
+    cfg["implementer_llm"]["name"] = os.environ["SMOKE_IMPLEMENTER"]
 if os.environ.get("SMOKE_MAX_TOKENS"):
     cfg["rl"]["advisor_max_tokens"] = int(os.environ["SMOKE_MAX_TOKENS"])
 if os.environ.get("SMOKE_TIMEOUT"):
