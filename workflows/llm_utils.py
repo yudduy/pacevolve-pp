@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections.abc import MutableSequence
+from collections.abc import Mapping, MutableSequence
 import dataclasses
 import json
 import re
 import logging
 import os
+import threading
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Union
 
@@ -31,6 +32,7 @@ logger = logging.getLogger("controller")
 # leaked (timed-out but still-running) calls don't starve the pool.
 import concurrent.futures as _futures
 _LLM_EXECUTOR = _futures.ThreadPoolExecutor(max_workers=96, thread_name_prefix="llmcall")
+_TRANSCRIPT_FILE_LOCK = threading.Lock()
 
 @dataclasses.dataclass
 class ContentChunk:
@@ -51,8 +53,9 @@ class Transcript(MutableSequence):
     def _log_to_file(self, v):
         if isinstance(v, ContentChunk) and self._log_filename:
             json_str = dataclasses.asdict(v)
-            with open(self._log_filename, 'a') as f:
-                f.write(json.dumps(json_str) + "\n")
+            with _TRANSCRIPT_FILE_LOCK:
+                with open(self._log_filename, 'a') as f:
+                    f.write(json.dumps(json_str) + "\n")
 
     def hide_by_tag(self, tags: list[str]):
         for chunk in self._list:
@@ -238,6 +241,47 @@ if OPENAI_AVAILABLE:
             # at ~4 chars/token (same convention as OllamaClient).
             return max(1, len(text) // 4)
 
+        @staticmethod
+        def _field(value, name):
+            """Read SDK objects, dictionaries, and Pydantic extra fields."""
+            if value is None:
+                return None
+            if isinstance(value, Mapping):
+                return value.get(name)
+            field_value = getattr(value, name, None)
+            if field_value is not None:
+                return field_value
+            model_extra = getattr(value, "model_extra", None)
+            if isinstance(model_extra, Mapping):
+                return model_extra.get(name)
+            return None
+
+        def _log_usage(self, response) -> None:
+            usage = self._field(response, "usage")
+            prompt_tokens = self._field(usage, "prompt_tokens")
+            completion_tokens = self._field(usage, "completion_tokens")
+            details = self._field(usage, "prompt_tokens_details")
+            cache_fields = []
+            for name in (
+                "cached_tokens",
+                "cache_read_tokens",
+                "cache_read_input_tokens",
+            ):
+                value = self._field(details, name)
+                if value is None:
+                    value = self._field(usage, name)
+                if value is not None:
+                    cache_fields.append(f"{name}={value}")
+            cache_suffix = f" {' '.join(cache_fields)}" if cache_fields else ""
+            logger.info(
+                "OpenRouter usage: model=%s prompt_tokens=%s "
+                "completion_tokens=%s%s",
+                self._field(response, "model") or self.model_name,
+                prompt_tokens,
+                completion_tokens,
+                cache_suffix,
+            )
+
         def generate(self, prompt: str, generation_config: Dict[str, Any]) -> str:
             params = {
                 "model": self.model_name,
@@ -247,9 +291,24 @@ if OPENAI_AVAILABLE:
                 "max_tokens": generation_config.get("max_output_tokens", 8192),
                 "extra_headers": self.extra_headers,
             }
+            extra_body = {"usage": {"include": True}}
             if self.reasoning is not None:
-                params["extra_body"] = {"reasoning": self.reasoning}
+                extra_body["reasoning"] = self.reasoning
+            provider_order = [
+                provider.strip()
+                for provider in os.environ.get(
+                    "OPENROUTER_PROVIDER_ORDER", ""
+                ).split(",")
+                if provider.strip()
+            ]
+            if provider_order:
+                extra_body["provider"] = {
+                    "order": provider_order,
+                    "allow_fallbacks": True,
+                }
+            params["extra_body"] = extra_body
             response = self.client.chat.completions.create(**params)
+            self._log_usage(response)
             return response.choices[0].message.content or ""
 
 # --- Anthropic Client ---
@@ -386,10 +445,16 @@ def generate_completion(
 
     for i in range(max_tries):
         try:
-            fut = _LLM_EXECUTOR.submit(
-                llm_client.generate, final_prompt, generation_config
-            )
-            output_text = fut.result(timeout=hard_timeout)
+            if getattr(llm_client, "generate_in_caller_thread", False):
+                # BackendLLMClient must generate and expose last_generation in
+                # this rollout thread so its thread-local token capture is read
+                # by the matching sample. Tinker enforces its own call timeout.
+                output_text = llm_client.generate(final_prompt, generation_config)
+            else:
+                fut = _LLM_EXECUTOR.submit(
+                    llm_client.generate, final_prompt, generation_config
+                )
+                output_text = fut.result(timeout=hard_timeout)
             break
         except _futures.TimeoutError:
             logger.error(

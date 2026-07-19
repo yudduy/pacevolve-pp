@@ -21,11 +21,13 @@ import importlib
 import os
 import shutil
 import sys
+import threading
 import types
 
 import pytest
 import yaml
 
+import advisor_utils
 import idea_select_utils
 import llm_utils
 import rl_rewards
@@ -151,6 +153,129 @@ def test_smoke_none_objective_performs_no_updates(tmp_path, monkeypatch):
     assert order.count("update") == 0
     assert len(backend.update_calls) == 0
     assert order.count("register") >= 4  # candidates still enter the population
+
+
+def test_parallel_group_isolates_workers_and_preserves_step_seed(
+    tmp_path, monkeypatch
+):
+    config = _config(tmp_path)
+    config["rl"].update(
+        {
+            "advisor_flow": "propose",
+            "parallel_rollouts": True,
+        }
+    )
+    config["paths"]["results_path"] = str(tmp_path / "results")
+    config["paths"]["build_dir"] = str(tmp_path / "build")
+    order = []
+    real_generate_completion = llm_utils.generate_completion
+    db, idea_repo_db, prompts, _, backend, cc, ec, rc, args = _harness(
+        config, "none", monkeypatch, order
+    )
+    monkeypatch.setattr(
+        llm_utils, "generate_completion", real_generate_completion
+    )
+
+    class StaticImplementer(llm_utils.LLMClient):
+        def count_tokens(self, text):
+            return max(1, len(text) // 4)
+
+        def generate(self, prompt, generation_config):
+            del prompt, generation_config
+            return (
+                "```python\n# SCORE: 3.0\n"
+                "def solve(x):\n    return x\n```"
+            )
+
+    advisor = run_advisor_rl.rl_trainer.BackendLLMClient(
+        backend, advisor_utils.make_role_config(config, "advisor")
+    )
+    barrier = threading.Barrier(4)
+    seen = []
+    seen_lock = threading.Lock()
+    original_implement_idea = advisor_utils.implement_idea
+
+    def record_worker(*call_args, **call_kwargs):
+        worker_compile_config = call_args[6]
+        worker_eval_configs = call_args[7]
+        worker_config = call_args[8]
+        with open(worker_compile_config.target_file_path) as worker_file:
+            worker_source = worker_file.read()
+        has_current_snapshot = "# CURRENT SNAPSHOT" in worker_source
+        has_slot_mutation = "# SLOT MUTATION" in worker_source
+        with seen_lock:
+            seen.append(
+                (
+                    worker_config["paths"]["src_path"],
+                    worker_config["paths"]["build_dir"],
+                    worker_config["paths"]["results_path"],
+                    worker_compile_config.target_file_path,
+                    id(worker_eval_configs),
+                    os.environ.get("PACE_EVAL_CASE_SEED"),
+                    has_current_snapshot,
+                    has_slot_mutation,
+                )
+            )
+        barrier.wait(timeout=5)
+        trial = original_implement_idea(*call_args, **call_kwargs)
+        with open(worker_compile_config.target_file_path, "a") as worker_file:
+            worker_file.write("\n# SLOT MUTATION\n")
+        return trial
+
+    monkeypatch.setattr(advisor_utils, "implement_idea", record_worker)
+    monkeypatch.setenv("PACE_EVAL_CASE_SEED", "step-seed")
+    canonical_source = (tmp_path / "src" / "fake_1.py").read_text()
+
+    group = run_advisor_rl.build_rollout_group(
+        0,
+        config,
+        args,
+        db,
+        idea_repo_db,
+        prompts,
+        advisor,
+        StaticImplementer({}),
+        cc,
+        ec,
+        rc,
+    )
+
+    assert len(group.samples) == 4
+    assert [sample.raw_score for sample in group.samples] == [3.0] * 4
+    assert all(sample.eval_success for sample in group.samples)
+    assert len({record[0] for record in seen}) == 4
+    assert len({record[1] for record in seen}) == 4
+    assert len({record[2] for record in seen}) == 4
+    assert len({record[3] for record in seen}) == 4
+    assert len({record[4] for record in seen}) == 4
+    assert {record[5] for record in seen} == {"step-seed"}
+    assert (tmp_path / "src" / "fake_1.py").read_text() == canonical_source
+
+    canonical_path = tmp_path / "src" / "fake_1.py"
+    current_source = "# CURRENT SNAPSHOT\n" + canonical_path.read_text()
+    canonical_path.write_text(current_source)
+    seen.clear()
+    config["rl"]["rollout_workers"] = 2
+    barrier = threading.Barrier(2)
+    next_group = run_advisor_rl.build_rollout_group(
+        1,
+        config,
+        args,
+        db,
+        idea_repo_db,
+        prompts,
+        advisor,
+        StaticImplementer({}),
+        cc,
+        ec,
+        rc,
+    )
+
+    assert len(next_group.samples) == 4
+    assert len({record[0] for record in seen}) == 2
+    assert all(record[6] for record in seen)
+    assert not any(record[7] for record in seen)
+    assert canonical_path.read_text() == current_source
 
 
 def test_barrier_merges_all_successful_idea_forks(tmp_path, monkeypatch):

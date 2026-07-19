@@ -77,6 +77,8 @@ rl:
   advisor_max_tokens: 2048
   advisor_temperature: 1.0
   advisor_enable_thinking: true
+  parallel_rollouts: true    # per-worker isolated src/build trees; 4x wall-clock on rollouts
+  rollout_workers: 4
   n_samples: 4
   top_k: 2
   total_steps: 128          # paper horizon; 128 * n_samples = 512 candidate evals

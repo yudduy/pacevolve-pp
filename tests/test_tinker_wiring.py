@@ -22,9 +22,14 @@ stale/mismatched generations and is a no-op for name-string advisors, and the
 ``y_min`` knob and ``alpha_r`` guard behave.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+import threading
+
 import numpy as np
 
 import advantages
+import llm_utils
 import rl_rewards
 import rl_trainer
 import run_advisor_rl
@@ -168,6 +173,80 @@ def test_reset_clears_slot_and_is_safe_for_strings():
     run_advisor_rl._reset_advisor_capture("qwen/qwen3-8b")  # must not raise
 
 
+def test_parallel_mock_capture_is_thread_local():
+    barrier = threading.Barrier(2)
+
+    class ThreadedMockBackend(rl_trainer.MockPolicyBackend):
+        def generate(self, prompt, generation_config):
+            del generation_config
+            token = 11 if "alpha" in prompt else 22
+            generation = rl_trainer.GenerationResult(
+                text=prompt,
+                token_ids=np.array([token], dtype=np.int64),
+                logprobs=np.array([-token / 100.0]),
+                prompt_token_ids=np.array([token + 100], dtype=np.int64),
+            )
+            self.last_generation = generation
+            barrier.wait()
+            return generation
+
+    backend = ThreadedMockBackend({})
+    advisor = rl_trainer.BackendLLMClient(backend, {"llm": {}})
+
+    def generate_and_capture(label):
+        transcript = llm_utils.Transcript()
+        transcript.append(llm_utils.ContentChunk(label, "user"))
+        raw = llm_utils.generate_completion(
+            advisor,
+            transcript,
+            {"llm": {"max_try_count": 1}},
+        )
+        return run_advisor_rl._capture_advisor_tokens(advisor, raw)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        alpha, beta = executor.map(generate_and_capture, ("alpha", "beta"))
+
+    assert alpha[0].tolist() == [11]
+    assert alpha[2].tolist() == [111]
+    assert beta[0].tolist() == [22]
+    assert beta[2].tolist() == [122]
+
+
+def test_backend_client_retries_timeout_in_caller_thread():
+    caller_thread = threading.get_ident()
+
+    class RetryBackend(rl_trainer.MockPolicyBackend):
+        def __init__(self):
+            super().__init__({})
+            self.calls = []
+
+        def generate(self, prompt, generation_config):
+            self.calls.append(threading.get_ident())
+            if len(self.calls) == 1:
+                raise FuturesTimeoutError
+            return super().generate(prompt, generation_config)
+
+    backend = RetryBackend()
+    advisor = rl_trainer.BackendLLMClient(backend, {"llm": {}})
+    transcript = llm_utils.Transcript()
+    transcript.append(llm_utils.ContentChunk("retry", "user"))
+
+    raw = llm_utils.generate_completion(
+        advisor,
+        transcript,
+        {"llm": {"max_try_count": 2, "request_timeout": 0.01}},
+    )
+
+    assert raw == "mock response"
+    assert backend.calls == [caller_thread, caller_thread]
+    assert run_advisor_rl._capture_advisor_tokens(advisor, raw)[0].tolist() == [
+        0,
+        1,
+        2,
+        3,
+    ]
+
+
 def test_clean_text_matches_generate_completion_postprocessing():
     assert run_advisor_rl._clean_text("  <start_of_turn>hi<end_of_turn>  ") == "hi"
     assert run_advisor_rl._clean_text(None) is None
@@ -198,6 +277,15 @@ def test_resolve_base_url_blank_values_fall_through(monkeypatch):
     assert tinker_backend._resolve_base_url(
         {"tinker_base_url": "http://cfg:8"}
     ) == "http://cfg:8"
+
+
+def test_generation_timeout_preserves_generate_completion_deadline():
+    config = {
+        "llm": {"request_timeout": 200},
+        "advisor_llm": {"request_timeout": 100},
+    }
+    assert tinker_backend._resolve_generation_timeout(config, 600) == 130
+    assert tinker_backend._resolve_generation_timeout(config, 90) == 90
 
 
 class _StubTok:

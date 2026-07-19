@@ -15,10 +15,13 @@
 """PACEvolve++ advisor reinforcement-learning barrier loop."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from importlib import import_module
 import logging
 import os
+import queue
+import shutil
 import sys
 import time
 
@@ -66,6 +69,13 @@ def _resolve_config_paths(config, compile_config):
     for key in _RUNTIME_DIRS:
         if paths.get(key):
             os.makedirs(paths[key], exist_ok=True)
+
+
+def _refresh_worker_src(canonical_src, worker_src):
+    """Replace a worker source tree with the current canonical snapshot."""
+    if os.path.exists(worker_src):
+        shutil.rmtree(worker_src)
+    shutil.copytree(canonical_src, worker_src)
 
 
 def _clean_text(text):
@@ -253,26 +263,135 @@ def build_rollout_group(
     eval_configs,
     reward_cfg,
 ) -> rl_trainer.RolloutGroup:
-    """Build a sequential rollout group and shape every sample's reward."""
-    # Parallel rollout construction is a future extension. Candidates share a
-    # target file, so naive thread-based evaluation is not safe.
-    samples = [
-        build_rollout_sample(
-            step,
-            sample_index,
-            config,
-            args,
-            db,
-            idea_repo_db,
-            prompts,
-            advisor,
-            implementer,
-            compile_config,
-            eval_configs,
-            reward_cfg,
+    """Build a rollout group and shape every sample's reward."""
+    rl_cfg = config.get("rl") or {}
+    if bool(rl_cfg.get("parallel_rollouts", False)) and args.n_samples > 0:
+        worker_count = int(rl_cfg.get("rollout_workers", args.n_samples))
+        if worker_count < 1:
+            raise ValueError("rl.rollout_workers must be at least 1")
+        worker_count = min(worker_count, args.n_samples)
+
+        canonical_src = os.path.abspath(
+            os.path.expanduser(config["paths"]["src_path"])
         )
-        for sample_index in range(args.n_samples)
-    ]
+        canonical_target = os.path.abspath(
+            os.path.expanduser(compile_config.target_file_path)
+        )
+        target_relpath = os.path.relpath(canonical_target, canonical_src)
+        if target_relpath == os.pardir or target_relpath.startswith(
+            os.pardir + os.sep
+        ):
+            raise ValueError(
+                "compile_config.target_file_path must be inside paths.src_path"
+            )
+
+        worker_base = os.path.join(
+            os.path.abspath(
+                os.path.expanduser(config["paths"]["results_path"])
+            ),
+            "rollout_workers",
+        )
+        if os.path.commonpath((canonical_src, worker_base)) == canonical_src:
+            raise ValueError(
+                "paths.results_path must be outside paths.src_path for "
+                "parallel rollouts"
+            )
+
+        # Copy the current canonical tree before rewriting any worker paths.
+        # Population promotion remains in-memory after the barrier; no worker
+        # candidate file is copied back to the canonical source tree.
+        worker_slots = queue.Queue()
+        for worker_index in range(worker_count):
+            worker_root = os.path.join(worker_base, f"w{worker_index}")
+            worker_src = os.path.join(worker_root, "src")
+            worker_build = os.path.join(worker_root, "build")
+            worker_results = os.path.join(worker_root, "results")
+            _refresh_worker_src(canonical_src, worker_src)
+            os.makedirs(worker_build, exist_ok=True)
+            os.makedirs(worker_results, exist_ok=True)
+
+            worker_config = deepcopy(config)
+            worker_config["paths"]["src_path"] = worker_src
+            worker_config["paths"]["build_dir"] = worker_build
+            worker_config["paths"]["results_path"] = worker_results
+            worker_config["paths"]["target_file_path"] = target_relpath
+
+            worker_compile_config = deepcopy(compile_config)
+            worker_compile_config.target_file_path = os.path.join(
+                worker_src, target_relpath
+            )
+            worker_slots.put(
+                {
+                    "index": worker_index,
+                    "config": worker_config,
+                    "compile_config": worker_compile_config,
+                    "eval_configs": deepcopy(eval_configs),
+                    "used": False,
+                }
+            )
+
+        def build_in_worker(sample_index):
+            worker = worker_slots.get()
+            started = time.monotonic()
+            try:
+                worker_index = worker["index"]
+                worker_config = worker["config"]
+                worker_compile_config = worker["compile_config"]
+                worker_eval_configs = worker["eval_configs"]
+                if worker["used"]:
+                    _refresh_worker_src(
+                        canonical_src, worker_config["paths"]["src_path"]
+                    )
+                worker["used"] = True
+                logger.info(
+                    "Rollout sample %d started on worker w%d: %s",
+                    sample_index,
+                    worker_index,
+                    worker_config["paths"]["src_path"],
+                )
+                return build_rollout_sample(
+                    step,
+                    sample_index,
+                    worker_config,
+                    args,
+                    db,
+                    idea_repo_db,
+                    prompts,
+                    advisor,
+                    implementer,
+                    worker_compile_config,
+                    worker_eval_configs,
+                    reward_cfg,
+                )
+            finally:
+                logger.info(
+                    "Rollout sample %d finished on worker w%d after %.2fs",
+                    sample_index,
+                    worker["index"],
+                    time.monotonic() - started,
+                )
+                worker_slots.put(worker)
+
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            samples = list(executor.map(build_in_worker, range(args.n_samples)))
+    else:
+        samples = [
+            build_rollout_sample(
+                step,
+                sample_index,
+                config,
+                args,
+                db,
+                idea_repo_db,
+                prompts,
+                advisor,
+                implementer,
+                compile_config,
+                eval_configs,
+                reward_cfg,
+            )
+            for sample_index in range(args.n_samples)
+        ]
     for sample in samples:
         sample.reward = rl_rewards.shape_reward(sample.raw_score, reward_cfg)
     return rl_trainer.RolloutGroup(step=step, samples=samples)

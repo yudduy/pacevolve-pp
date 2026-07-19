@@ -18,6 +18,7 @@ import abc
 import dataclasses
 import logging
 import math
+import threading
 
 import numpy as np
 
@@ -106,17 +107,29 @@ class MockPolicyBackend(PolicyBackend):
         self.update_calls: list[tuple[int, np.ndarray]] = []
         self.sync_calls = 0
         self.last_advantages: np.ndarray | None = None
+        self._generation_state = threading.local()
+        self.last_generation: GenerationResult | None = None
+
+    @property
+    def last_generation(self) -> GenerationResult | None:
+        return getattr(self._generation_state, "last_generation", None)
+
+    @last_generation.setter
+    def last_generation(self, generation: GenerationResult | None) -> None:
+        self._generation_state.last_generation = generation
 
     def generate(
         self, prompt: str, generation_config: dict
     ) -> GenerationResult:
         del prompt, generation_config
         num_tokens = 4
-        return GenerationResult(
+        generation = GenerationResult(
             text="mock response",
             token_ids=np.arange(num_tokens),
             logprobs=np.zeros(num_tokens),
         )
+        self.last_generation = generation
+        return generation
 
     def update(
         self,
@@ -154,6 +167,8 @@ class MockPolicyBackend(PolicyBackend):
 
 class BackendLLMClient(llm_utils.LLMClient):
     """Adapt a policy backend to the advisor's LLM client interface."""
+
+    generate_in_caller_thread = True
 
     def __init__(self, backend: PolicyBackend, config: dict):
         super().__init__(config)

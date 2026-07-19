@@ -41,6 +41,7 @@ import asyncio
 import logging
 import os
 import re
+import threading
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 import numpy as np
@@ -62,6 +63,13 @@ def _resolve_base_url(rl_config: dict) -> str | None:
     if value is None:
         return None
     return str(value).strip() or None
+
+
+def _resolve_generation_timeout(config: dict, call_timeout: float) -> float:
+    """Match generate_completion's role-specific wall-clock deadline."""
+    llm = {**(config.get("llm") or {}), **(config.get("advisor_llm") or {})}
+    hard_timeout = float(llm.get("request_timeout", 240)) + 30.0
+    return min(call_timeout, hard_timeout)
 
 
 class TinkerPolicyBackend(rl_trainer.PolicyBackend):
@@ -90,6 +98,9 @@ class TinkerPolicyBackend(rl_trainer.PolicyBackend):
         self.enable_thinking = bool(rl.get("advisor_enable_thinking", True))
         # Wall-clock backstop for any single Tinker call (bounds a hung worker).
         self._call_timeout = float(rl.get("tinker_call_timeout", 600.0))
+        self._generation_timeout = _resolve_generation_timeout(
+            config, self._call_timeout
+        )
 
         self._tinker = tinker
         self._hf_tok = AutoTokenizer.from_pretrained(self.model_name)
@@ -98,8 +109,6 @@ class TinkerPolicyBackend(rl_trainer.PolicyBackend):
         # One dedicated thread owns the loop; build the Tinker clients ON that
         # thread so any loop-bound primitives bind to self._loop (affinity).
         self._loop = asyncio.new_event_loop()
-        import threading
-
         self._loop_thread = threading.Thread(
             target=self._loop.run_forever, name="tinker-loop", daemon=True
         )
@@ -110,7 +119,9 @@ class TinkerPolicyBackend(rl_trainer.PolicyBackend):
             self._sampling_client,
         ) = self._run(self._async_setup())
 
-        # Populated by generate(); read by run_advisor_rl to fill RolloutSample.
+        # Populated by generate(); read by run_advisor_rl in the same rollout
+        # worker thread to fill RolloutSample without cross-sample races.
+        self._generation_state = threading.local()
         self.last_generation: rl_trainer.GenerationResult | None = None
 
         if self.loss_fn == "importance_sampling":
@@ -138,16 +149,27 @@ class TinkerPolicyBackend(rl_trainer.PolicyBackend):
         )
         return service, training_client, sampling_client
 
+    @property
+    def last_generation(self) -> rl_trainer.GenerationResult | None:
+        return getattr(self._generation_state, "last_generation", None)
+
+    @last_generation.setter
+    def last_generation(
+        self, generation: rl_trainer.GenerationResult | None
+    ) -> None:
+        self._generation_state.last_generation = generation
+
     # -- async plumbing: dispatch onto the loop thread, bounded + cancellable --
-    def _run(self, coro):
+    def _run(self, coro, timeout=None):
+        call_timeout = self._call_timeout if timeout is None else timeout
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         try:
-            return future.result(timeout=self._call_timeout)
+            return future.result(timeout=call_timeout)
         except FuturesTimeoutError:
             future.cancel()
             logger.error(
                 "Tinker call exceeded %.0fs wall-clock; cancelled.",
-                self._call_timeout,
+                call_timeout,
             )
             raise
 
@@ -217,7 +239,8 @@ class TinkerPolicyBackend(rl_trainer.PolicyBackend):
                 prompt=self._model_input(prompt_ids),
                 num_samples=1,
                 sampling_params=params,
-            )
+            ),
+            timeout=self._generation_timeout,
         )
         seq = result.sequences[0]
         tokens = list(seq.tokens)
