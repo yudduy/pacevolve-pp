@@ -13,7 +13,8 @@ SCRATCH=/scratch/users/duynguy
 PP="$SCRATCH/pacevolve-pp"
 SKYRL_DIR="$SCRATCH/skyrl"
 UV="$HOME/.local/bin/uv"
-PORT=8000
+# Job-unique port: two jobs packed onto one 4-GPU node must not collide.
+PORT=$((8000 + ${SLURM_JOB_ID:-0} % 1000))
 
 MODEL="Qwen/Qwen3-0.6B"; GPU=0; NS=2; MS=1
 while [ $# -gt 0 ]; do
