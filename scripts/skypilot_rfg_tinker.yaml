@@ -48,13 +48,17 @@ run: |
   set -e
   export PATH="$HOME/.local/bin:$PATH"
   cd ~/skyrl
-  # Measured on FarmShare: without caps the train JIT OOMs beside JAX's sampling
-  # prealloc (RESOURCE_EXHAUSTED loop). Same defaults as farmshare_skyrl_smoke.sh.
-  export XLA_PYTHON_CLIENT_MEM_FRACTION=0.70
+  # Measured on RunPod A100-80 (2026-07-19): the batch-4 ~13k-token prefill wants
+  # a ~15GiB T-scaled buffer INSIDE the pool -> fraction 0.85, not 0.70; fwd_bwd
+  # needs gradient_checkpointing (else ~29GiB activation stash at 15k seq); and
+  # new-jax-on-older-driver hosts fail CUDA-graph capture (cudaGraphAddMemsetNode
+  # invalid argument) -> disable XLA command buffers.
+  export XLA_PYTHON_CLIENT_MEM_FRACTION=0.85
+  export XLA_FLAGS="--xla_gpu_enable_command_buffer="
   export SKYRL_DATABASE_URL="sqlite:////tmp/skyrl-tinker.db"
   nohup uv run --extra tinker --extra jax --extra gpu -m skyrl.tinker.api \
     --base-model "$ADVISOR_MODEL" --port 8000 \
-    --backend-config '{"train_micro_batch_size": 1, "sample_max_num_sequences": 4}' \
+    --backend-config '{"train_micro_batch_size": 1, "sample_max_num_sequences": 4, "gradient_checkpointing": true}' \
     > ~/server.log 2>&1 &
   echo $! > ~/server.pid
   # health poll (JAX warmup + 8B load can take a while)
