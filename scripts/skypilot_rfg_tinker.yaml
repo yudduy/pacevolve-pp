@@ -48,8 +48,14 @@ run: |
   set -e
   export PATH="$HOME/.local/bin:$PATH"
   cd ~/skyrl
+  # Measured on FarmShare: without caps the train JIT OOMs beside JAX's sampling
+  # prealloc (RESOURCE_EXHAUSTED loop). Same defaults as farmshare_skyrl_smoke.sh.
+  export XLA_PYTHON_CLIENT_MEM_FRACTION=0.70
+  export SKYRL_DATABASE_URL="sqlite:////tmp/skyrl-tinker.db"
   nohup uv run --extra tinker --extra jax --extra gpu -m skyrl.tinker.api \
-    --base-model "$ADVISOR_MODEL" --port 8000 > ~/server.log 2>&1 &
+    --base-model "$ADVISOR_MODEL" --port 8000 \
+    --backend-config '{"train_micro_batch_size": 1, "sample_max_num_sequences": 4}' \
+    > ~/server.log 2>&1 &
   echo $! > ~/server.pid
   # health poll (JAX warmup + 8B load can take a while)
   DEADLINE=$((SECONDS + 1800))
