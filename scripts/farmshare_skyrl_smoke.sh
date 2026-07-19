@@ -66,8 +66,12 @@ trap cleanup EXIT
 
 echo "=== launch skyrl-tx server: $MODEL (gpu=$GPU) -> $SERVER_LOG ==="
 cd "$SKYRL_DIR"
+# SKYRL_BACKEND_CONFIG: optional JSON for --backend-config, e.g.
+#   '{"tensor_parallel_size": 2}' or '{"sample_max_num_sequences": 2, "train_micro_batch_size": 1}'
+# (8B in bf16 OOMs a single 48GB L40S with default JAX buffer sizing.)
 nohup "$UV" run "${EXTRAS[@]}" -m skyrl.tinker.api \
-  --base-model "$MODEL" --port "$PORT" > "$SERVER_LOG" 2>&1 &
+  --base-model "$MODEL" --port "$PORT" \
+  ${SKYRL_BACKEND_CONFIG:+--backend-config "$SKYRL_BACKEND_CONFIG"} > "$SERVER_LOG" 2>&1 &
 echo $! > "$PIDFILE"
 
 # Health poll: generous timeout — first JAX compile/weight load is slow (esp. 8B).
@@ -91,7 +95,8 @@ echo "=== materialize smoke config (advisor_model=$MODEL) ==="
 cd "$PP"
 PYBIN=/scratch/users/duynguy/ttt-discover/.venv/bin/python
 # CPU tier: short generations + long call timeout (JAX-CPU sampling is slow).
-if [ "$GPU" = 1 ]; then SMOKE_MAX_TOKENS=""; SMOKE_TIMEOUT=""; else SMOKE_MAX_TOKENS=256; SMOKE_TIMEOUT=1800; fi
+# GPU tier: long timeout too — 8B weight load + JIT can exceed the 600s default.
+if [ "$GPU" = 1 ]; then SMOKE_MAX_TOKENS=""; SMOKE_TIMEOUT=1800; else SMOKE_MAX_TOKENS=256; SMOKE_TIMEOUT=1800; fi
 MODEL="$MODEL" SMOKE_MAX_TOKENS="$SMOKE_MAX_TOKENS" SMOKE_TIMEOUT="$SMOKE_TIMEOUT" "$PYBIN" - <<'EOF'
 import os, yaml
 src = "tasks/rectangle_free_grid/config/config_1.yaml"
