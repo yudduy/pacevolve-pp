@@ -98,18 +98,21 @@ until curl -sf "http://127.0.0.1:$PORT/docs" > /dev/null 2>&1 \
 done
 echo "server up after ${SECONDS}s"
 
-# Materialize smoke config (run_id 9): config_1.yaml with rl.advisor_model = $MODEL.
-# Client model_name must match the server's --base-model; no repo code change needed.
-echo "=== materialize smoke config (advisor_model=$MODEL) ==="
+# Materialize a PER-JOB config: config_1.yaml with rl.advisor_model = $MODEL and
+# all working paths rewritten into a per-job workspace. Without this, concurrent
+# Slurm jobs share src/solution.cpp + results over NFS and cross-contaminate.
+RID="${SLURM_JOB_ID:-9}"
+echo "=== materialize per-job config (run_id=$RID advisor_model=$MODEL) ==="
 cd "$PP"
 PYBIN=/scratch/users/duynguy/ttt-discover/.venv/bin/python
 # CPU tier: short generations + long call timeout (JAX-CPU sampling is slow).
 # GPU tier: long timeout too — 8B weight load + JIT can exceed the 600s default.
 if [ "$GPU" = 1 ]; then SMOKE_MAX_TOKENS=""; SMOKE_TIMEOUT=1800; else SMOKE_MAX_TOKENS=256; SMOKE_TIMEOUT=1800; fi
-MODEL="$MODEL" SMOKE_MAX_TOKENS="$SMOKE_MAX_TOKENS" SMOKE_TIMEOUT="$SMOKE_TIMEOUT" "$PYBIN" - <<'EOF'
-import os, yaml
+MODEL="$MODEL" RID="$RID" SMOKE_MAX_TOKENS="$SMOKE_MAX_TOKENS" SMOKE_TIMEOUT="$SMOKE_TIMEOUT" "$PYBIN" - <<'EOF'
+import os, shutil, yaml
+rid = os.environ["RID"]
 src = "tasks/rectangle_free_grid/config/config_1.yaml"
-dst = "tasks/rectangle_free_grid/config/config_9.yaml"
+dst = f"tasks/rectangle_free_grid/config/config_{rid}.yaml"
 with open(src) as f:
     cfg = yaml.safe_load(f)
 cfg["rl"]["advisor_model"] = os.environ["MODEL"]
@@ -119,14 +122,28 @@ if os.environ.get("SMOKE_MAX_TOKENS"):
     cfg["rl"]["advisor_max_tokens"] = int(os.environ["SMOKE_MAX_TOKENS"])
 if os.environ.get("SMOKE_TIMEOUT"):
     cfg["rl"]["tinker_call_timeout"] = float(os.environ["SMOKE_TIMEOUT"])
+# Per-job workspace: concurrent jobs must not share src/build/results over NFS.
+ws = f"tasks/rectangle_free_grid/results/job_{rid}"
+paths = cfg.get("paths") or {}
+canon_src = paths.get("src_path", "tasks/rectangle_free_grid/src")
+job_src = f"{ws}/src"
+os.makedirs(ws, exist_ok=True)
+if not os.path.isdir(job_src):
+    shutil.copytree(canon_src, job_src)
+paths["src_path"] = job_src
+for key, sub in (("build_dir", "build"), ("results_path", "results"),
+                 ("log_dir", "logs"), ("transcript_dir", "transcripts")):
+    if key in paths:
+        paths[key] = f"{ws}/{sub}"
+cfg["paths"] = paths
 with open(dst, "w") as f:
     yaml.safe_dump(cfg, f, sort_keys=False)
-print("wrote", dst, "advisor_model=", cfg["rl"]["advisor_model"])
+print("wrote", dst, "advisor_model=", cfg["rl"]["advisor_model"], "workspace=", ws)
 EOF
 
 echo "=== driver: run_advisor_rl --backend tinker (model=$MODEL n=$NS steps=$MS) ==="
 RC=0
-"$PYBIN" -u workflows/run_advisor_rl.py -t rectangle_free_grid -r 9 --backend tinker \
+"$PYBIN" -u workflows/run_advisor_rl.py -t rectangle_free_grid -r "$RID" --backend tinker \
   --n_samples "$NS" --max_steps "$MS" || RC=$?
 echo "=== smoke END rc=$RC (server log: $SERVER_LOG) ==="
 exit $RC
