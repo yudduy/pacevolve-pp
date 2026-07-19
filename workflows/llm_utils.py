@@ -479,7 +479,13 @@ def generate_completion(
 def extract_code_blocks(markdown_string: str) -> list[str]:
     if not markdown_string:
         return []
-    code_blocks = re.findall(
-        r'```(?:[a-zA-Z0-9_+\.-]+)?\n(.*?)\n```', markdown_string, re.DOTALL
+    code_block_pattern = re.compile(
+        r'^[ \t]*(?P<fence>`{3,})(?:[a-zA-Z0-9_+\.-]+)?[ \t]*\r?\n'
+        r'(?P<code>.*?)'
+        r'\r?\n[ \t]*(?P=fence)[ \t]*$',
+        re.DOTALL | re.MULTILINE,
     )
-    return [block for block in code_blocks]
+    return [
+        match.group('code')
+        for match in code_block_pattern.finditer(markdown_string)
+    ]

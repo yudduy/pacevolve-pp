@@ -45,6 +45,111 @@ class AlgorithmTrial:
   idea_id: int = -1
 
 
+class InvalidModelEditError(ValueError):
+  """Raised when model formatting would corrupt the edited source file."""
+
+
+_MARKDOWN_FENCE_LINE_RE = re.compile(r"^[ \t]*```", re.MULTILINE)
+_BOUNDARY_FENCE = r"`{3,}(?:[a-zA-Z0-9_+\.\-]+)?"
+_FENCE_DELIMITER_LINE_RE = re.compile(
+    rf"^[ \t]*{_BOUNDARY_FENCE}[ \t]*\r?$",
+    re.MULTILINE,
+)
+
+
+def _tag_line_pattern(tag: str) -> re.Pattern:
+  return re.compile(
+      rf"^[ \t]*(?:(?://|#)[ \t]*)?{re.escape(tag)}[ \t]*\r?$",
+      re.MULTILINE,
+  )
+
+
+def _strip_structural_newlines(content: str) -> str:
+  if content.startswith("\r\n"):
+    content = content[2:]
+  elif content.startswith("\n"):
+    content = content[1:]
+
+  if content.endswith("\r\n"):
+    content = content[:-2]
+  elif content.endswith("\n"):
+    content = content[:-1]
+  return content
+
+
+def _strip_boundary_fences(content: str) -> str:
+  content = re.sub(
+      rf"\A[ \t]*{_BOUNDARY_FENCE}[ \t]*(?:\r?\n)?",
+      "",
+      content,
+      count=1,
+  )
+  return re.sub(
+      rf"(?:\r?\n)?[ \t]*{_BOUNDARY_FENCE}[ \t]*\Z",
+      "",
+      content,
+      count=1,
+  )
+
+
+def _extract_tagged_edit(
+  response: str,
+  start_tag: str,
+  end_tag: str,
+) -> str | None:
+  """Extracts the outermost complete standalone tag pair from a response."""
+  start_matches = list(_tag_line_pattern(start_tag).finditer(response))
+  end_matches = list(_tag_line_pattern(end_tag).finditer(response))
+  if not start_matches or not end_matches:
+    return None
+
+  start_match = start_matches[0]
+  end_match = next(
+      (
+          match
+          for match in reversed(end_matches)
+          if match.start() >= start_match.end()
+      ),
+      None,
+  )
+  if end_match is None:
+    return None
+
+  content = response[start_match.end():end_match.start()]
+  content = _strip_structural_newlines(content)
+  return _strip_boundary_fences(content)
+
+
+def extract_edit_content(
+  response: str,
+  start_tag: str,
+  end_tag: str,
+) -> str | None:
+  """Normalizes one model response into a replacement for the tagged region."""
+  tagged_edit = _extract_tagged_edit(response, start_tag, end_tag)
+  if tagged_edit is not None:
+    return tagged_edit
+
+  if (
+      _tag_line_pattern(start_tag).search(response)
+      or _tag_line_pattern(end_tag).search(response)
+  ):
+    return None
+  if len(_FENCE_DELIMITER_LINE_RE.findall(response)) != 2:
+    return None
+  code_blocks = llm_utils.extract_code_blocks(response)
+  if len(code_blocks) != 1:
+    return None
+
+  code_block = code_blocks[0]
+  tagged_edit = _extract_tagged_edit(code_block, start_tag, end_tag)
+  if tagged_edit is not None:
+    return tagged_edit
+  if start_tag in code_block or end_tag in code_block:
+    return None
+  return code_block
+
+
 def _summarize_compile_error(process: CompletedProcess, config: dict) -> str:
   summ_config = config['summarization']
   error_summary_lines = []
@@ -91,16 +196,26 @@ def attempt_compile(
   compile_config: CompilationConfig,
   config: dict,
 ) -> tuple[AlgorithmTrial, str]:
+  output_trial = copy.deepcopy(trial)
+  output_trial.compile_success = False
   try:
     edit_library(
       compile_config.target_file_path,
       algorithm_implementation=trial.algorithm_implementation,
       config=config,
     )
+  except InvalidModelEditError as e:
+    error_message = (
+      f"The proposed code edit was rejected before compilation: {e}. "
+      "Please provide exactly one complete markdown code block without edit "
+      "tags or markdown fence lines inside the code."
+    )
+    logger.warning(f"attempt_compile: {error_message}")
+    return output_trial, error_message
   except ValueError as e:
     error_message = f"INTERNAL ERROR: Failed to edit library: {e}"
     logger.critical(f"attempt_compile: {error_message}")
-    return trial, error_message
+    return output_trial, error_message
   
   task_id = config['experiment']['task_id']
   # Dynamically import task-specific eval_utils
@@ -122,7 +237,6 @@ def attempt_compile(
   )
   for line in command_output:
     logger.debug(f"attempt_compile: {line}")
-  output_trial = copy.deepcopy(trial)
   output_trial.compile_success = success
   return output_trial, output_message
 
@@ -143,6 +257,7 @@ def edit_until_compile(
   code_was_revised = False
   recovery_prompt = None
   trial = copy.deepcopy(trial)  # Do not modify the original trial object.
+  trial.compile_success = False
   while num_attempts < max_compile_attempts:
     num_attempts += 1
     logger.info(f"edit_until_compile: {num_attempts}/{max_compile_attempts}")
@@ -191,17 +306,21 @@ def edit_until_compile(
         trial.idea_id = idea_id
 
 
-    code_blocks = llm_utils.extract_code_blocks(current_llm_response)
+    algorithm_implementation = extract_edit_content(
+      current_llm_response,
+      config['compilation']['edit_start_tag'],
+      config['compilation']['edit_end_tag'],
+    )
 
-    if not code_blocks:
-      logger.warning("edit_until_compile: Code blocks not found in response.")
+    if algorithm_implementation is None:
+      logger.warning("edit_until_compile: Unambiguous code edit not found.")
       recovery_prompt = (
-        "Your output did not contain any markdown-formatted code blocks. "
-        "Please provide one."
+        "Your output did not contain one unambiguous code edit. Please provide "
+        "exactly one complete markdown-formatted code block."
       )
       continue
 
-    trial.algorithm_implementation = code_blocks[0]  # Use the first block.
+    trial.algorithm_implementation = algorithm_implementation
     trial, recovery_prompt = attempt_compile(trial, compile_config, config)
 
     if trial.compile_success:
@@ -273,6 +392,15 @@ def edit_library(
   start_tag: str = config['compilation']['edit_start_tag']
   end_tag: str = config['compilation']['edit_end_tag']
 
+  if _MARKDOWN_FENCE_LINE_RE.search(algorithm_implementation):
+    raise InvalidModelEditError(
+        "replacement contains a Markdown fence line"
+    )
+  if start_tag in algorithm_implementation or end_tag in algorithm_implementation:
+    raise InvalidModelEditError(
+        "replacement contains an edit tag marker"
+    )
+
   try:
     comment_marker = get_comment_marker_for_file(target_file_path)
     logger.info(f"Using comment marker '{comment_marker}' for {target_file_path}")
@@ -325,6 +453,25 @@ def edit_library(
           f"'{start_tag}'/'{end_tag}' in {target_file_path}."
       )
       raise ValueError("Tags found, but pattern substitution failed.")
+
+  start_tag_lines = re.findall(
+      rf"^[ \t]*{esc_comment}[ \t]*{esc_start_tag}[ \t]*$",
+      new_content,
+      re.MULTILINE,
+  )
+  end_tag_lines = re.findall(
+      rf"^[ \t]*{esc_comment}[ \t]*{esc_end_tag}[ \t]*$",
+      new_content,
+      re.MULTILINE,
+  )
+  if len(start_tag_lines) != 1 or len(end_tag_lines) != 1:
+    raise InvalidModelEditError(
+        "applied edit did not leave exactly one valid start/end tag pair"
+    )
+  if _MARKDOWN_FENCE_LINE_RE.search(new_content):
+    raise InvalidModelEditError(
+        "applied edit left a Markdown fence line in the target file"
+    )
 
   with open(target_file_path, 'w') as file:
     file.write(new_content)
