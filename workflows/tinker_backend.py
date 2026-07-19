@@ -72,6 +72,37 @@ def _resolve_generation_timeout(config: dict, call_timeout: float) -> float:
     return min(call_timeout, hard_timeout)
 
 
+def _resolve_fb_loss(fb_result) -> float:
+    """Scalar training loss from a forward_backward result.
+
+    Managed Tinker reports metrics["loss"]; skyrl-tx returns metrics={} and
+    per-token losses in loss_fn_outputs[i]["elementwise_loss"] instead — take
+    the token-mean so both servers produce a comparable curve.
+    """
+    metrics = getattr(fb_result, "metrics", None)
+    if isinstance(metrics, dict) and "loss" in metrics:
+        return float(metrics["loss"])
+    total = 0.0
+    count = 0
+    for out in getattr(fb_result, "loss_fn_outputs", None) or []:
+        if isinstance(out, dict):
+            elem = out.get("elementwise_loss")
+        else:
+            elem = getattr(out, "elementwise_loss", None)
+        if elem is None:
+            continue
+        if hasattr(elem, "tolist"):
+            data = elem.tolist()
+        elif isinstance(elem, dict):
+            data = elem.get("data") or []
+        else:
+            data = getattr(elem, "data", None) or []
+        for v in data:
+            total += float(v)
+            count += 1
+    return total / count if count else float("nan")
+
+
 class TinkerPolicyBackend(rl_trainer.PolicyBackend):
     """Real advisor policy backend: sample from Tinker, apply a LoRA update."""
 
@@ -356,10 +387,7 @@ class TinkerPolicyBackend(rl_trainer.PolicyBackend):
         )
         self._run(opt_future.result_async())
 
-        loss_value = float("nan")
-        metrics = getattr(fb_result, "metrics", None)
-        if isinstance(metrics, dict) and "loss" in metrics:
-            loss_value = float(metrics["loss"])
+        loss_value = _resolve_fb_loss(fb_result)
         # clip_fraction is unknown for Tinker's internal loss; report NaN rather
         # than a fake 0.0 so logs don't imply clipping that isn't measured here.
         return {

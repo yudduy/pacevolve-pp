@@ -318,3 +318,39 @@ def test_render_ids_dict_return():
 
 def test_render_ids_batched_return():
     assert _render_with([[4, 5]]) == [4, 5]
+
+
+class _StubTensor:
+    def __init__(self, data):
+        self._data = data
+
+    def tolist(self):
+        return self._data
+
+
+class _StubFBResult:
+    def __init__(self, metrics=None, loss_fn_outputs=None):
+        self.metrics = metrics if metrics is not None else {}
+        self.loss_fn_outputs = loss_fn_outputs or []
+
+
+def test_fb_loss_prefers_managed_tinker_metrics():
+    fb = _StubFBResult(metrics={"loss": 1.25})
+    assert tinker_backend._resolve_fb_loss(fb) == 1.25
+
+
+def test_fb_loss_aggregates_skyrl_elementwise_outputs():
+    # skyrl-tx: metrics={} and per-token losses in loss_fn_outputs.
+    fb = _StubFBResult(
+        loss_fn_outputs=[
+            {"elementwise_loss": _StubTensor([1.0, 2.0])},
+            {"elementwise_loss": {"data": [3.0]}},
+        ]
+    )
+    assert tinker_backend._resolve_fb_loss(fb) == 2.0
+
+
+def test_fb_loss_nan_when_no_signal():
+    import math
+
+    assert math.isnan(tinker_backend._resolve_fb_loss(_StubFBResult()))
