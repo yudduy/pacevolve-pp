@@ -37,14 +37,18 @@ while true; do
     if [ "$NOW" -gt "$STEPCNT" ]; then
       echo "$STEPS" | awk -v n=$STEPCNT 'NR>n' | python3 -c "
 import sys, re
+# Report only signal: milestone steps (every 10), any skip, or a record-threatening
+# max (>=0.60 single-seed). Routine clean steps are tracked but not echoed.
 for ln in sys.stdin:
-    m=re.search(r'Step (\d+): mean_reward=([0-9.]+) max_reward=([0-9.]+) skipped=(\w+).*?trained_samples.: (\d+)?', ln)
+    m=re.search(r'Step (\d+): mean_reward=([0-9.-]+) max_reward=([0-9.-]+) skipped=(\w+).*?trained_samples.: (\d+)?', ln)
     if not m:
-        m2=re.search(r'Step (\d+):.*max_reward=([0-9.]+) skipped=(\w+)', ln)
+        m2=re.search(r'Step (\d+):.*max_reward=([0-9.-]+) skipped=(\w+)', ln)
         if m2: print(f'  step {m2.group(1)} SKIPPED (max~{float(m2.group(2))*0.1334:.4f})')
         continue
     s,mn,mx,sk,ts=m.groups()
-    print(f'  step {s}: max_score={float(mx)*0.1334:.4f} mean={float(mn)*0.1334:.4f} trained={ts or \"?\"} skipped={sk}')"
+    ms=float(mx)*0.1334
+    if int(s)%10==0 or sk=='True' or ms>=0.60:
+        print(f'  step {s}: max_score={ms:.4f} mean={float(mn)*0.1334:.4f} trained={ts or \"?\"} skipped={sk}')"
       # skip-storm check over last 5
       RECENT=$(echo "$STEPS" | tail -5 | grep -c "skipped=True")
       [ "${RECENT:-0}" -ge 3 ] && echo "ALARM: $RECENT of last 5 steps skipped — advisor stalling (likely OOM storm). Consider harvest-early + stop pod $POD."
