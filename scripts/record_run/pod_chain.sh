@@ -22,9 +22,13 @@ python3 -m venv --system-site-packages /workspace/pvenv
 PIP=/workspace/pvenv/bin/pip
 PY=/workspace/pvenv/bin/python
 $PIP -q install --upgrade pip 2>&1 | tail -1
-$PIP -q install tinker chz termcolor ray numpy pyyaml wandb openai transformers requests || { echo "CHAIN-FAIL pip"; exit 1; }
+$PIP -q install tinker chz termcolor ray numpy pyyaml wandb openai tiktoken transformers requests || { echo "CHAIN-FAIL pip"; exit 1; }
 $PY - <<'EOF' || { echo "CHAIN-FAIL imports"; exit 1; }
-import tinker, transformers, wandb, openai, numpy, yaml
+import tinker, transformers, wandb, numpy, yaml
+# Mirror llm_utils's OPENAI_AVAILABLE guard EXACTLY: it needs BOTH imports, and
+# a miss silently disables the openrouter implementer (rc=1 at first rollout).
+from openai import OpenAI
+import tiktoken
 from ttt_discover.rl import data_processing
 from ttt_discover.rl.types import Trajectory, Transition
 from ttt_discover.tinker_utils.completers import TokensWithLogprobs

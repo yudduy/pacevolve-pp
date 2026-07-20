@@ -11,7 +11,7 @@ PP=/Users/c-dnguyen/Documents/project/pacevolve-pp
 TTT=/Users/c-dnguyen/Documents/project/ttt-discover
 KEY=$HOME/.runpod/ssh/runpodctl-ssh-key
 case "$SIZE" in
-  32b) HF="Qwen/Qwen3-32B"; GPUS=4; BOOT="$SP/bootstrap_32b_tp4.sh"; HOURS=20;;
+  32b) HF="Qwen/Qwen3-32B"; GPUS=4; BOOT="$SP/bootstrap_32b_tp4.sh"; HOURS=16;;
   8b)  HF="Qwen/Qwen3-8B";  GPUS=1; BOOT="$SP/bootstrap_8b.sh";      HOURS=22;;
   *) echo "LAUNCH-FAIL bad size"; exit 2;;
 esac
@@ -99,10 +99,10 @@ rm -f "$ENVTMP"
 scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -i "$KEY" -P "$SSH_PORT" \
   "$BOOT" "root@$SSH_IP:/workspace/bootstrap.sh"
 scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -i "$KEY" -P "$SSH_PORT" \
-  "$SP/pod_chain.sh" "$SP/upload_artifact.py" "root@$SSH_IP:/workspace/"
+  "$SP/pod_chain.sh" "$SP/pod_reaper.sh" "$SP/upload_artifact.py" "root@$SSH_IP:/workspace/"
 
-echo "=== launch bootstrap + chain ==="
-SSHQ "nohup bash /workspace/bootstrap.sh > /workspace/bootstrap.log 2>&1 & sleep 1; nohup bash /workspace/pod_chain.sh $RID $HF 4 128 > /workspace/chain.log 2>&1 & sleep 1; echo launched-both" \
+echo "=== launch bootstrap + chain + reaper ==="
+SSHQ "nohup bash /workspace/bootstrap.sh > /workspace/bootstrap.log 2>&1 & sleep 1; nohup bash /workspace/pod_chain.sh $RID $HF 4 128 > /workspace/chain.log 2>&1 & sleep 1; nohup bash /workspace/pod_reaper.sh $RID > /dev/null 2>&1 & sleep 1; echo launched-all" \
   || FAIL remote-launch
 
 cat > "$SP/record_run.state" <<EOF

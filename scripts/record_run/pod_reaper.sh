@@ -13,15 +13,12 @@ LOG=/workspace/reaper.log
 C=0
 
 stop_container() {
-  echo "$(date -u +%FT%TZ) reaper: $1 -> stopping container" >> "$LOG"
+  # Observed 2026-07-19: RunPod keeps billing a pod whose PID1/sshd die — the
+  # kill strategy just blinds ssh while $/hr continues. Never kill; mark only.
+  # Billing stops via Mac-side pod removal or the terminate-after backstop.
+  echo "$(date -u +%FT%TZ) reaper: $1 -> RUN_OVER marker (no in-pod billing stop exists)" >> "$LOG"
   sync
-  pkill -f 'sleep infinity' 2>/dev/null
-  pkill -x sshd 2>/dev/null
-  kill -TERM 1 2>/dev/null
-  sleep 25
-  kill -KILL 1 2>/dev/null
-  pkill -KILL -f 'sleep' 2>/dev/null
-  echo "$(date -u +%FT%TZ) reaper: still alive after kill attempts" >> "$LOG"
+  touch /workspace/RUN_OVER
 }
 
 emergency_upload() {
@@ -41,6 +38,7 @@ emergency_upload() {
 
 echo "$(date -u +%FT%TZ) reaper: armed rid=$RID" >> "$LOG"
 while true; do
+  [ -f /workspace/RUN_OVER ] && { sleep 600; continue; }
   if grep -q "CHAIN COMPLETE" /workspace/chain.log 2>/dev/null; then
     sleep 60
     stop_container "chain-complete"
