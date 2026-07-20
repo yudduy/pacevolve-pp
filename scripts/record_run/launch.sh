@@ -99,10 +99,10 @@ rm -f "$ENVTMP"
 scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -i "$KEY" -P "$SSH_PORT" \
   "$BOOT" "root@$SSH_IP:/workspace/bootstrap.sh"
 scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -i "$KEY" -P "$SSH_PORT" \
-  "$SP/pod_chain.sh" "$SP/pod_reaper.sh" "$SP/upload_artifact.py" "root@$SSH_IP:/workspace/"
+  "$SP/pod_chain.sh" "$SP/pod_reaper.sh" "$SP/champion_saver.sh" "$SP/upload_artifact.py" "root@$SSH_IP:/workspace/"
 
-echo "=== launch bootstrap + chain + reaper ==="
-SSHQ "nohup bash /workspace/bootstrap.sh > /workspace/bootstrap.log 2>&1 & sleep 1; nohup bash /workspace/pod_chain.sh $RID $HF 4 128 > /workspace/chain.log 2>&1 & sleep 1; nohup bash /workspace/pod_reaper.sh $RID > /dev/null 2>&1 & sleep 1; echo launched-all" \
+echo "=== launch bootstrap + chain + reaper + archiver ==="
+SSHQ "nohup bash /workspace/bootstrap.sh > /workspace/bootstrap.log 2>&1 & sleep 1; nohup bash /workspace/pod_chain.sh $RID $HF 4 128 > /workspace/chain.log 2>&1 & sleep 1; nohup bash /workspace/pod_reaper.sh $RID > /dev/null 2>&1 & sleep 1; nohup bash /workspace/champion_saver.sh $RID > /workspace/saver_stdout.log 2>&1 & sleep 1; echo launched-all" \
   || FAIL remote-launch
 
 cat > "$SP/record_run.state" <<EOF

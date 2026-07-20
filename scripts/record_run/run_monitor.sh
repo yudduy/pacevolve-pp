@@ -10,7 +10,7 @@ KEY=$HOME/.runpod/ssh/runpodctl-ssh-key
 ENVF=/Users/c-dnguyen/Documents/project/ttt-discover/.env
 CLOG="/workspace/pp/tasks/rectangle_free_grid/results/job_${RID}/logs"
 STEPCNT=0; LASTPROG_T=$SECONDS; FAILS=0; LASTBEAT=0; OOMCNT=0
-SSHC() { ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -i "$KEY" -p "$SSH_PORT" "root@$SSH_IP" "$1" 2>/dev/null; }
+SSHC() { ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 -o StrictHostKeyChecking=no -i "$KEY" -p "$SSH_PORT" "root@$SSH_IP" "$1" 2>/dev/null; }
 APIQ() {
   # shellcheck disable=SC1090
   . "$ENVF" 2>/dev/null
@@ -55,7 +55,7 @@ for ln in sys.stdin:
     fi
   else
     FAILS=$((FAILS+1))
-    if [ "$FAILS" -ge 3 ]; then
+    if [ "$FAILS" -ge 5 ]; then
       ST=$(PODSTATE)
       case "$ST" in
         EXITED) echo "POD STOPPED — harvest W&B rfg-$RID-results, then delete pod $POD shell."; exit 0;;
