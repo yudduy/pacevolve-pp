@@ -87,7 +87,13 @@ rl:
   entropic_gamma: 1.0
   clip_eps_lo: 0.2
   clip_eps_hi: 0.28
-  eval_case_resampling: true   # resample eval (n,m) cases each step (same cases within a step) — anti-memorization
+  eval_case_resampling: false  # FIXED judge-style round-number cases (DEFAULT_CASES), matching the real
+                               # FrontierCS judge (a fixed hidden set of round-number cases). Measured
+                               # 2026-07-20: per-step resampling of ARBITRARY sizes both (a) inverted the
+                               # near-top ranking vs the real judge and (b) added reward noise that swamped
+                               # the RL signal. Fixed cases rank correctly (frontier>=champion>>seed) and
+                               # give a deterministic, low-noise reward. (sample_cases now draws round
+                               # numbers if resampling is re-enabled for anti-memorization variety.)
   reward:
     scale_c: 5.0
     alpha_r: 1.0
